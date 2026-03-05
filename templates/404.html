@@ -1,0 +1,12 @@
+{% extends "base.html" %}
+{% block title %}No encontrado{% endblock %}
+{% block content %}
+<div class="rounded-3xl border border-slate-200 bg-white p-6 shadow-sm">
+  <h1 class="text-2xl font-semibold">{{ msg if msg else "No encontrado" }}</h1>
+  <p class="mt-2 text-sm text-slate-600">La página o especie solicitada no existe.</p>
+  <div class="mt-4 flex gap-2 flex-wrap">
+    <a href="{{ url_for('index') }}" class="rounded-2xl bg-emerald-600 px-4 py-2 text-white text-sm font-medium hover:bg-emerald-700">Escanear</a>
+    <a href="{{ url_for('especies') }}" class="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50">Especies</a>
+  </div>
+</div>
+{% endblock %}

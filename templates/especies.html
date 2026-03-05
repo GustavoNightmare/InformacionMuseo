@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Especies | BioScan{% endblock %}
+{% block content %}
+<div class="flex items-end justify-between gap-4 flex-wrap">
+  <div>
+    <h1 class="text-2xl font-semibold">Especies</h1>
+    <p class="mt-1 text-sm text-slate-600">Listado con tarjetas.</p>
+  </div>
+  <a href="{{ url_for('index') }}" class="rounded-2xl bg-emerald-600 px-4 py-2 text-white text-sm font-medium hover:bg-emerald-700">
+    Escanear QR
+  </a>
+</div>
+
+<form class="mt-4 flex gap-2 flex-wrap" method="get" action="{{ url_for('especies') }}">
+  <input name="q" value="{{ q }}" placeholder="Buscar por ID, nombre común o científico…"
+    class="w-full sm:w-96 rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200"/>
+  <button class="rounded-2xl border border-emerald-200 px-4 py-2 text-sm font-medium hover:bg-emerald-50">
+    Buscar
+  </button>
+</form>
+
+<div class="mt-6 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+  {% for item in items %}
+  <a href="{{ url_for('especie', species_id=item.id) }}"
+     class="group rounded-3xl border border-emerald-100 bg-white shadow-sm hover:shadow-md transition overflow-hidden">
+    <div class="h-40 bg-slate-100 overflow-hidden">
+      {% if item.imagen %}
+        <img src="{{ url_for('static', filename=item.imagen) }}" alt="{{ item.nombre_comun }}"
+             class="h-full w-full object-cover group-hover:scale-[1.02] transition" />
+      {% else %}
+        <div class="h-full w-full grid place-items-center text-slate-500 text-sm">Sin imagen</div>
+      {% endif %}
+    </div>
+
+    <div class="p-4">
+      <div class="text-xs text-slate-500">{{ item.id }}</div>
+      <div class="mt-1 font-semibold">{{ item.nombre_comun }}</div>
+      <div class="text-sm italic text-slate-600">{{ item.nombre_cientifico }}</div>
+      {% if item.zonas %}
+        <div class="mt-2 text-xs text-slate-600 line-clamp-2">
+          <span class="font-semibold">Zonas:</span> {{ item.zonas }}
+        </div>
+      {% endif %}
+    </div>
+  </a>
+  {% endfor %}
+</div>
+
+{% if items|length == 0 %}
+  <div class="mt-6 rounded-3xl border border-slate-200 bg-white p-6 text-sm text-slate-600">
+    No hay resultados.
+  </div>
+{% endif %}
+{% endblock %}

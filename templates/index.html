@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}Escanear | BioScan{% endblock %}
+{% block content %}
+<div class="grid gap-6 md:grid-cols-2 items-start">
+  <section class="rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm">
+    <h1 class="text-2xl font-semibold">Escanear código QR</h1>
+    <p class="mt-2 text-sm text-slate-600">
+      El QR debe contener solo el ID (ej: <span class="font-mono">condor-001</span>).
+    </p>
+
+    <div class="mt-5 flex flex-wrap gap-2">
+      <button id="btnStart"
+        class="rounded-2xl bg-emerald-600 px-4 py-2 text-white text-sm font-medium hover:bg-emerald-700">
+        Iniciar cámara
+      </button>
+      <button id="btnStop" disabled
+        class="rounded-2xl bg-slate-200 px-4 py-2 text-sm font-medium text-slate-700 disabled:opacity-50">
+        Detener
+      </button>
+      <a href="{{ url_for('especies') }}"
+        class="rounded-2xl border border-emerald-200 px-4 py-2 text-sm font-medium hover:bg-emerald-50">
+        Ver especies
+      </a>
+    </div>
+
+    <div class="mt-5">
+      <div class="text-xs text-slate-500 mb-2">Último QR leído</div>
+      <div class="rounded-2xl bg-slate-50 border border-slate-200 p-3 font-mono text-sm" id="out">—</div>
+    </div>
+  </section>
+
+  <section class="rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm">
+    <div class="flex items-center justify-between">
+      <h2 class="text-lg font-semibold">Cámara</h2>
+      <span id="status" class="text-xs px-2 py-1 rounded-full bg-slate-100 text-slate-600">Inactiva</span>
+    </div>
+    <div class="mt-4 rounded-3xl overflow-hidden border border-slate-200 bg-black">
+      <div id="reader" class="w-full"></div>
+    </div>
+  </section>
+</div>
+
+<script src="https://unpkg.com/html5-qrcode"></script>
+<script>
+  const out = document.getElementById("out");
+  const statusEl = document.getElementById("status");
+  const btnStart = document.getElementById("btnStart");
+  const btnStop  = document.getElementById("btnStop");
+  let qr = null;
+  let running = false;
+
+  function setStatus(text, kind="idle") {
+    statusEl.textContent = text;
+    statusEl.className = "text-xs px-2 py-1 rounded-full " + (
+      kind === "run" ? "bg-sky-100 text-sky-700" :
+      kind === "err" ? "bg-rose-100 text-rose-700" :
+      "bg-slate-100 text-slate-600"
+    );
+  }
+
+  function normalizeToSpeciesId(decodedText) {
+    let id = (decodedText || "").trim().toLowerCase();
+    id = id.replace(/[^a-z0-9-_]/g, "");
+    return id;
+  }
+
+  async function start() {
+    if (running) return;
+    qr = new Html5Qrcode("reader");
+    try {
+      await qr.start(
+        { facingMode: "environment" },
+        { fps: 10, qrbox: { width: 260, height: 260 } },
+        async (decodedText) => {
+          const id = normalizeToSpeciesId(decodedText);
+          out.textContent = decodedText;
+          await stop();
+          window.location.href = "/especie/" + encodeURIComponent(id);
+        },
+        () => {}
+      );
+      running = true;
+      btnStart.disabled = true;
+      btnStop.disabled = false;
+      setStatus("Escaneando…", "run");
+    } catch (e) {
+      setStatus("Error de cámara", "err");
+      out.textContent = "Error iniciando cámara: " + (e?.message || e);
+    }
+  }
+
+  async function stop() {
+    if (!qr || !running) return;
+    try { await qr.stop(); await qr.clear(); }
+    finally {
+      running = false;
+      btnStart.disabled = false;
+      btnStop.disabled = true;
+      setStatus("Inactiva", "idle");
+    }
+  }
+
+  btnStart.addEventListener("click", start);
+  btnStop.addEventListener("click", stop);
+</script>
+{% endblock %}

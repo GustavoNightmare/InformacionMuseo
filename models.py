@@ -1,0 +1,75 @@
+from flask_sqlalchemy import SQLAlchemy
+from flask_login import UserMixin
+from werkzeug.security import generate_password_hash, check_password_hash
+import json
+from datetime import datetime
+
+db = SQLAlchemy()
+
+class User(UserMixin, db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+
+    username = db.Column(db.String(80), unique=True, nullable=False)
+    password_hash = db.Column(db.String(255), nullable=False)
+    is_admin = db.Column(db.Boolean, default=False, nullable=False)
+
+    def set_password(self, password: str):
+        self.password_hash = generate_password_hash(password)
+
+    def check_password(self, password: str) -> bool:
+        return check_password_hash(self.password_hash, password)
+
+class Species(db.Model):
+    # El QR trae este ID: "condor-001"
+    id = db.Column(db.String(64), primary_key=True)
+
+    # Datos generales (estructurados)
+    nombre_comun = db.Column(db.String(200), nullable=False)
+    nombre_cientifico = db.Column(db.String(200), nullable=True)
+
+    descripcion = db.Column(db.Text, nullable=True)
+    habitat = db.Column(db.Text, nullable=True)
+    dieta = db.Column(db.Text, nullable=True)
+
+    # NUEVO: dónde se encuentra + mapa
+    zonas = db.Column(db.Text, nullable=True)                 # ej: "Cauca, Nariño, Andes..."
+    map_embed_url = db.Column(db.String(600), nullable=True)  # ej: URL embed Google Maps
+
+    # Imagen y audio (se suben)
+    imagen = db.Column(db.String(300), nullable=True)  # ej: "uploads/condor-001/img_xxx.jpg"
+    audio = db.Column(db.String(300), nullable=True)   # ej: "uploads/condor-001/audio_xxx.mp3"
+
+    # Datos específicos del museo (para RAG)
+    museo_info = db.Column(db.Text, nullable=True)
+
+    curiosidades_json = db.Column(db.Text, nullable=True)
+
+    @property
+    def curiosidades(self):
+        if not self.curiosidades_json:
+            return []
+        try:
+            return json.loads(self.curiosidades_json)
+        except Exception:
+            return []
+
+    @curiosidades.setter
+    def curiosidades(self, value):
+        self.curiosidades_json = json.dumps(value or [], ensure_ascii=False)
+
+class MuseumDoc(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    species_id = db.Column(db.String(64), db.ForeignKey("species.id"), nullable=False)
+
+    stored_path = db.Column(db.String(400), nullable=False)    # uploads/<id>/doc_xxx.pdf
+    original_name = db.Column(db.String(255), nullable=False)  # nombre original
+    file_type = db.Column(db.String(20), nullable=False)       # pdf|docx|txt
+    extracted_text = db.Column(db.Text, nullable=True)
+
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+class Visit(db.Model):
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
+    species_id = db.Column(db.String(64), db.ForeignKey("species.id"), nullable=False)
+    visited_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)

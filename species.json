@@ -1,0 +1,30 @@
+{
+  "condor-001": {
+    "id": "condor-001",
+    "nombre_comun": "Cóndor Andino",
+    "nombre_cientifico": "Vultur gryphus",
+    "descripcion": "Ave carroñera emblemática de los Andes. Planea largas distancias aprovechando corrientes térmicas.",
+    "habitat": "Zonas montañosas andinas, acantilados y páramos.",
+    "dieta": "Carroña (principalmente).",
+    "estado_conservacion": "Casi Amenazado",
+    "imagen": "img/condor.jpg",
+    "curiosidades": [
+      "Puede alcanzar grandes alturas en vuelo.",
+      "Es una de las aves voladoras más grandes."
+    ]
+  },
+  "rana-010": {
+    "id": "rana-010",
+    "nombre_comun": "Rana de cristal",
+    "nombre_cientifico": "Centrolenidae sp.",
+    "descripcion": "Pequeña rana con piel parcialmente translúcida en el vientre.",
+    "habitat": "Bosques húmedos, cerca de quebradas y ríos.",
+    "dieta": "Insectos pequeños.",
+    "estado_conservacion": "Depende de la especie",
+    "imagen": "img/rana.jpg",
+    "curiosidades": [
+      "Su transparencia ayuda al camuflaje.",
+      "Suelen habitar cerca de corrientes de agua."
+    ]
+  }
+}
