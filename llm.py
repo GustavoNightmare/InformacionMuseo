@@ -5,114 +5,95 @@ import requests
 
 class LLMClient:
     """
-    Interfaz:
-      - chat(messages)  -> str          (no streaming)
-      - stream(messages) -> generator  (streaming por chunks)
-
-    messages: lista de dicts:
-      [{ "role": "system"|"user"|"assistant", "content": "..." }, ...]
+    - chat(messages) -> str (sin streaming)
+    - stream(messages) -> generator (streaming por chunks)
     """
 
     def __init__(self):
         self.provider = os.getenv("LLM_PROVIDER", "ollama")
-
-        # Usamos /api/generate (como `ollama run`), más estable que /api/chat en algunos casos.
-        self.ollama_url = os.getenv("OLLAMA_GEN_URL", "http://127.0.0.1:11434/api/generate")
-
-        # Usa exactamente el modelo que tienes en Ollama (ej: llama3.1:8b)
+        self.ollama_url = os.getenv(
+            "OLLAMA_GEN_URL", "http://127.0.0.1:11434/api/generate")
         self.ollama_model = os.getenv("OLLAMA_CHAT_MODEL", "llama3.1:8b")
 
-        # Contexto y longitud de salida (ajusta si quieres)
         self.num_ctx = int(os.getenv("OLLAMA_NUM_CTX", "4096"))
-        self.num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "180"))  # reduce latencia
+        self.num_predict = int(os.getenv("OLLAMA_NUM_PREDICT", "180"))
+        self.keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
 
-    # ------------------ API pública ------------------
+        # Para que no “alucine” conversaciones
+        self.temperature = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
+
+        # Si intenta poner “Usuario:” cortamos
+        self.stop = ["\nUsuario:", "Usuario:",
+                     "\nUser:", "User:", "\nFuente:", "Fuente:"]
 
     def chat(self, messages) -> str:
-        """Respuesta completa (sin streaming)."""
         if self.provider != "ollama":
-            raise NotImplementedError("Por ahora solo Ollama. Luego conectamos OpenAI.")
-
+            raise NotImplementedError("Por ahora solo Ollama.")
         prompt = self._messages_to_prompt(messages)
-        return self._generate_ollama(prompt, stream=False)
+        return self._generate(prompt)
 
     def stream(self, messages):
-        """Genera la respuesta por partes (streaming)."""
         if self.provider != "ollama":
-            raise NotImplementedError("Por ahora solo Ollama. Luego conectamos OpenAI.")
-
+            raise NotImplementedError("Por ahora solo Ollama.")
         prompt = self._messages_to_prompt(messages)
-        yield from self._generate_ollama_stream(prompt)
-
-    # ------------------ Helpers ------------------
+        yield from self._generate_stream(prompt)
 
     def _messages_to_prompt(self, messages) -> str:
         """
-        Convierte messages a un prompt tipo texto:
-        - junta system en un bloque
-        - junta conversación con prefijos Usuario/Asistente
+        Junta TODOS los system en un bloque (instrucciones + contexto),
+        y toma el ÚLTIMO mensaje del usuario como pregunta.
+        Sin etiquetas 'Usuario:'/'Asistente:' para evitar loops.
         """
         system_parts = []
-        convo_parts = []
+        last_user = ""
 
         for m in messages:
             role = (m.get("role") or "").strip()
             content = (m.get("content") or "").strip()
             if not content:
                 continue
-
             if role == "system":
                 system_parts.append(content)
             elif role == "user":
-                convo_parts.append(f"Usuario: {content}")
-            elif role == "assistant":
-                convo_parts.append(f"Asistente: {content}")
+                last_user = content  # nos quedamos con el último user
 
         system_block = "\n\n".join(system_parts).strip()
-        convo_block = "\n".join(convo_parts).strip()
 
-        prompt = ""
-        if system_block:
-            prompt += "INSTRUCCIONES Y CONTEXTO:\n" + system_block + "\n\n"
-        if convo_block:
-            prompt += "CONVERSACIÓN:\n" + convo_block + "\n\n"
-        prompt += "Asistente:"
-
+        prompt = (
+            "INSTRUCCIONES Y CONTEXTO (úsalos como fuente):\n"
+            f"{system_block}\n\n"
+            "PREGUNTA:\n"
+            f"{last_user}\n\n"
+            "RESPUESTA (solo la respuesta, sin 'Usuario:' ni 'Asistente:', sin preguntas adicionales):\n"
+        )
         return prompt
 
-    def _base_payload(self, prompt: str, stream: bool) -> dict:
+    def _payload(self, prompt: str, stream: bool) -> dict:
         return {
             "model": self.ollama_model,
             "prompt": prompt,
             "stream": stream,
+            "raw": True,
+            "keep_alive": self.keep_alive,
             "options": {
                 "num_ctx": self.num_ctx,
                 "num_predict": self.num_predict,
+                "temperature": self.temperature,
+                "stop": self.stop,
             },
         }
 
-    def _generate_ollama(self, prompt: str, stream: bool = False) -> str:
-        """
-        Llama a /api/generate sin streaming y devuelve `response`.
-        Importante: timeout=(10, None) -> 10s conexión, sin límite lectura (evita cortar a 3 min).
-        """
-        payload = self._base_payload(prompt, stream=False)
-
+    def _generate(self, prompt: str) -> str:
+        payload = self._payload(prompt, stream=False)
         r = requests.post(self.ollama_url, json=payload, timeout=(10, None))
         if not r.ok:
             raise RuntimeError(f"Ollama error {r.status_code}: {r.text}")
+        return (r.json().get("response") or "").strip()
 
-        data = r.json()
-        return (data.get("response") or "").strip()
-
-    def _generate_ollama_stream(self, prompt: str):
-        """
-        Streaming NDJSON de Ollama (/api/generate con stream=true).
-        Va yield-eando trozos de texto.
-        """
-        payload = self._base_payload(prompt, stream=True)
-
-        r = requests.post(self.ollama_url, json=payload, stream=True, timeout=(10, None))
+    def _generate_stream(self, prompt: str):
+        payload = self._payload(prompt, stream=True)
+        r = requests.post(self.ollama_url, json=payload,
+                          stream=True, timeout=(10, None))
         if not r.ok:
             raise RuntimeError(f"Ollama error {r.status_code}: {r.text}")
 

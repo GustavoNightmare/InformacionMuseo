@@ -1,7 +1,9 @@
 import os
 import re
 import uuid
-from flask import Flask, render_template, redirect, url_for, request, abort, jsonify, flash,Response, stream_with_context
+import urllib.parse
+import requests
+from flask import Flask, render_template, redirect, url_for, request, abort, jsonify, flash, Response, stream_with_context
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.utils import secure_filename
 
@@ -20,6 +22,7 @@ ALLOWED_IMAGES = {"jpg", "jpeg", "png", "webp"}
 
 UPLOAD_DIR = os.path.join("static", "uploads")
 
+
 def sanitize_id(raw: str) -> str:
     if raw is None:
         return ""
@@ -27,20 +30,41 @@ def sanitize_id(raw: str) -> str:
     sid = re.sub(r"[^a-z0-9-_]", "", sid)
     return sid
 
+
 def ext_of(filename: str) -> str:
     return (filename.rsplit(".", 1)[-1] if "." in filename else "").lower()
+
+
+def wikipedia_summary_es(title: str) -> str:
+    if not title:
+        return ""
+    t = urllib.parse.quote(title)
+    url = f"https://es.wikipedia.org/api/rest_v1/page/summary/{t}"
+    try:
+        r = requests.get(url, timeout=8)
+        if r.status_code != 200:
+            return ""
+        data = r.json()
+        return (data.get("extract") or "").strip()
+    except Exception:
+        return ""
+
 
 def allowed(filename: str, allowed_set: set[str]) -> bool:
     return ext_of(filename) in allowed_set
 
+
 def ensure_dir(path: str):
     os.makedirs(path, exist_ok=True)
+
 
 def unique_name(prefix: str, filename: str) -> str:
     safe = secure_filename(filename)
     return f"{prefix}_{uuid.uuid4().hex}_{safe}"
 
 # --------- TEXT EXTRACTION ---------
+
+
 def extract_text_from_pdf(filepath: str) -> str:
     try:
         reader = PdfReader(filepath)
@@ -51,12 +75,14 @@ def extract_text_from_pdf(filepath: str) -> str:
     except Exception:
         return ""
 
+
 def extract_text_from_docx(filepath: str) -> str:
     try:
         d = docx.Document(filepath)
         return "\n".join(p.text for p in d.paragraphs).strip()
     except Exception:
         return ""
+
 
 def extract_text_from_txt(filepath: str) -> str:
     try:
@@ -65,10 +91,12 @@ def extract_text_from_txt(filepath: str) -> str:
     except Exception:
         return ""
 
+
 # --------- APP ---------
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-secret-change-me")
-app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv("DATABASE_URL", "sqlite:///bioscan.db")
+app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
+    "DATABASE_URL", "sqlite:///bioscan.db")
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
@@ -82,6 +110,8 @@ llm = LLMClient()
 
 # Lazy init VectorStore (evita ruido en CLI)
 _VS = None
+
+
 def get_vs():
     global _VS
     if _VS is None:
@@ -89,19 +119,73 @@ def get_vs():
         _VS = VectorStore()
     return _VS
 
+
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
+
 
 def admin_required():
     if not current_user.is_authenticated or not current_user.is_admin:
         abort(403)
 
+
 @app.get("/favicon.ico")
 def favicon():
     return "", 204
+
+
 @app.post("/api/chat_stream")
 def api_chat_stream():
+    import requests
+    import urllib.parse
+
+    def wiki_find_best_title(query: str) -> str:
+        """Busca el mejor título en Wikipedia ES usando 'search'."""
+        if not query:
+            return ""
+        q = urllib.parse.quote(query)
+        url = (
+            "https://es.wikipedia.org/w/api.php"
+            f"?action=query&format=json&list=search&srsearch={q}&srlimit=1"
+        )
+        try:
+            r = requests.get(url, timeout=8)
+            if r.status_code != 200:
+                return ""
+            data = r.json()
+            results = data.get("query", {}).get("search", [])
+            if not results:
+                return ""
+            return (results[0].get("title") or "").strip()
+        except Exception:
+            return ""
+
+    def wiki_extract_by_title(title: str, max_chars: int = 2500) -> str:
+        """Extrae texto plano de Wikipedia ES dado un título."""
+        if not title:
+            return ""
+        t = urllib.parse.quote(title)
+        url = (
+            "https://es.wikipedia.org/w/api.php"
+            f"?action=query&format=json&prop=extracts&explaintext=1&redirects=1&titles={t}"
+        )
+        try:
+            r = requests.get(url, timeout=8)
+            if r.status_code != 200:
+                return ""
+            data = r.json()
+            pages = data.get("query", {}).get("pages", {})
+            if not pages:
+                return ""
+            page = next(iter(pages.values()))
+            text = (page.get("extract") or "").strip()
+            if not text:
+                return ""
+            return text[:max_chars].strip()
+        except Exception:
+            return ""
+
     data = request.get_json(silent=True) or {}
     species_id = sanitize_id(data.get("species_id") or "")
     user_msg = (data.get("message") or "").strip()
@@ -118,26 +202,62 @@ def api_chat_stream():
     user_id = current_user.id if current_user.is_authenticated else None
     structured = build_structured_context(user_id, sp)
 
+    # 1) RAG del museo
     try:
         chunks = get_vs().query_species(species_id, user_msg, k=4)
     except Exception:
         chunks = []
 
+    museo_context = ""
     if chunks:
-        museum_context = "FRAGMENTOS RELEVANTES DEL MUSEO (RAG):\n" + "\n\n".join([f"- {c['text']}" for c in chunks])
+        museo_context = "Contexto del museo (RAG):\n" + \
+            "\n\n".join([f"- {c['text']}" for c in chunks])
     else:
-        museum_context = "FRAGMENTOS RELEVANTES DEL MUSEO (RAG): No hay info indexada o no se pudo extraer."
+        museo_context = "Contexto del museo (RAG): No hay información del museo indexada para esta especie."
+
+    # 2) Wikipedia fallback SOLO si no hay RAG
+    wiki_context = ""
+    used_wiki = False
+    if not chunks:
+        # intentamos varias queries para que funcione aunque el nombre esté raro
+        candidates = []
+        if (sp.nombre_cientifico or "").strip():
+            candidates.append(sp.nombre_cientifico.strip())
+        if (sp.nombre_comun or "").strip():
+            candidates.append(sp.nombre_comun.strip())
+            candidates.append(sp.nombre_comun.strip() +
+                              " andino")  # ayuda para “Cóndor”
+        # título real
+        for cand in candidates:
+            title = wiki_find_best_title(cand)
+            if title:
+                extract = wiki_extract_by_title(title)
+                if extract:
+                    wiki_context = f"Contexto de apoyo (Wikipedia: {title}):\n{extract}"
+                    used_wiki = True
+                    print("[WIKI] usado para", species_id,
+                          "->", wiki_context[:60])
+                    break
 
     system = (
-        "Eres un guía del museo. Responde en español, claro y amable. "
-        "Usa SOLO el contexto proporcionado. "
-        "Si no es posible responder con el contexto, dilo."
+        "Eres un guía del museo. Responde en español, claro y amable.\n"
+        "Responde SOLO una vez.\n"
+        "Máximo 3 frases.\n"
+        "NO hagas preguntas ni sugieras preguntas.\n"
+        "NO uses 'Usuario:'/'Asistente:'.\n"
+        "Si usas Wikipedia, al final agrega exactamente una línea: 'Fuente: Wikipedia'.\n"
+        "Si NO hay información suficiente ni en el museo ni en Wikipedia, di: 'No tengo información suficiente para responder.'\n"
+        "No inventes datos."
+    )
+
+    full_context = (
+        "Contexto BD (ficha):\n" + structured + "\n\n" +
+        museo_context + ("\n\n" + wiki_context if wiki_context else "")
     )
 
     messages = [
         {"role": "system", "content": system},
-        {"role": "system", "content": structured},
-        {"role": "system", "content": museum_context},
+        {"role": "system", "content": full_context},
         {"role": "user", "content": user_msg},
     ]
 
@@ -150,14 +270,19 @@ def api_chat_stream():
 
     return Response(stream_with_context(generate()), mimetype="text/plain; charset=utf-8")
 # --------- ROUTES ---------
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
 
 # ----- AUTH -----
+
+
 @app.get("/login")
 def login():
     return render_template("login.html")
+
 
 @app.post("/login")
 def login_post():
@@ -170,6 +295,7 @@ def login_post():
     login_user(user)
     return redirect(url_for("index"))
 
+
 @app.get("/logout")
 @login_required
 def logout():
@@ -177,6 +303,8 @@ def logout():
     return redirect(url_for("index"))
 
 # ----- LIST -----
+
+
 @app.get("/especies")
 def especies():
     q = (request.args.get("q") or "").strip().lower()
@@ -191,6 +319,8 @@ def especies():
     return render_template("especies.html", items=items, q=q)
 
 # ----- DETAIL -----
+
+
 @app.get("/especie/<species_id>")
 def especie(species_id):
     sid = sanitize_id(species_id)
@@ -208,6 +338,8 @@ def especie(species_id):
     return render_template("especie.html", item=item)
 
 # --------- ADMIN CRUD ---------
+
+
 @app.get("/admin/especies")
 @login_required
 def admin_species_list():
@@ -215,11 +347,13 @@ def admin_species_list():
     items = Species.query.order_by(Species.nombre_comun.asc()).all()
     return render_template("admin_species_list.html", items=items)
 
+
 @app.get("/admin/especies/nueva")
 @login_required
 def admin_species_new():
     admin_required()
     return render_template("admin_species_form.html", item=None, docs=[])
+
 
 def handle_uploads_for_species(species_id: str, species_obj: Species):
     ensure_dir(UPLOAD_DIR)
@@ -275,6 +409,7 @@ def handle_uploads_for_species(species_id: str, species_obj: Species):
         )
         db.session.add(doc_row)
 
+
 @app.post("/admin/especies/nueva")
 @login_required
 def admin_species_new_post():
@@ -296,7 +431,8 @@ def admin_species_new_post():
     sp = Species(
         id=sid,
         nombre_comun=nombre_comun,
-        nombre_cientifico=(request.form.get("nombre_cientifico") or "").strip(),
+        nombre_cientifico=(request.form.get(
+            "nombre_cientifico") or "").strip(),
         descripcion=(request.form.get("descripcion") or "").strip(),
         habitat=(request.form.get("habitat") or "").strip(),
         dieta=(request.form.get("dieta") or "").strip(),
@@ -305,7 +441,8 @@ def admin_species_new_post():
         museo_info=(request.form.get("museo_info") or "").strip(),
     )
     curiosidades_raw = (request.form.get("curiosidades") or "").strip()
-    sp.curiosidades = [x.strip() for x in curiosidades_raw.split("\n") if x.strip()]
+    sp.curiosidades = [x.strip()
+                       for x in curiosidades_raw.split("\n") if x.strip()]
 
     db.session.add(sp)
 
@@ -325,6 +462,7 @@ def admin_species_new_post():
 
     return redirect(url_for("admin_species_list"))
 
+
 @app.get("/admin/especies/<species_id>/editar")
 @login_required
 def admin_species_edit(species_id):
@@ -333,8 +471,10 @@ def admin_species_edit(species_id):
     item = db.session.get(Species, sid)
     if not item:
         abort(404)
-    docs = MuseumDoc.query.filter_by(species_id=item.id).order_by(MuseumDoc.created_at.desc()).all()
+    docs = MuseumDoc.query.filter_by(species_id=item.id).order_by(
+        MuseumDoc.created_at.desc()).all()
     return render_template("admin_species_form.html", item=item, docs=docs)
+
 
 @app.post("/admin/especies/<species_id>/editar")
 @login_required
@@ -351,7 +491,8 @@ def admin_species_edit_post(species_id):
         return redirect(url_for("admin_species_edit", species_id=item.id))
 
     item.nombre_comun = nombre_comun
-    item.nombre_cientifico = (request.form.get("nombre_cientifico") or "").strip()
+    item.nombre_cientifico = (request.form.get(
+        "nombre_cientifico") or "").strip()
     item.descripcion = (request.form.get("descripcion") or "").strip()
     item.habitat = (request.form.get("habitat") or "").strip()
     item.dieta = (request.form.get("dieta") or "").strip()
@@ -360,7 +501,8 @@ def admin_species_edit_post(species_id):
     item.museo_info = (request.form.get("museo_info") or "").strip()
 
     curiosidades_raw = (request.form.get("curiosidades") or "").strip()
-    item.curiosidades = [x.strip() for x in curiosidades_raw.split("\n") if x.strip()]
+    item.curiosidades = [x.strip()
+                         for x in curiosidades_raw.split("\n") if x.strip()]
 
     try:
         handle_uploads_for_species(item.id, item)
@@ -377,6 +519,7 @@ def admin_species_edit_post(species_id):
         flash(f"Editado OK, pero falló indexación RAG: {e}", "error")
 
     return redirect(url_for("admin_species_list"))
+
 
 @app.post("/admin/especies/<species_id>/eliminar")
 @login_required
@@ -397,6 +540,7 @@ def admin_species_delete(species_id):
         pass
 
     return redirect(url_for("admin_species_list"))
+
 
 @app.post("/admin/especies/<species_id>/docs/<int:doc_id>/eliminar")
 @login_required
@@ -426,6 +570,7 @@ def admin_doc_delete(species_id, doc_id):
 
     return redirect(url_for("admin_species_edit", species_id=sid))
 
+
 @app.post("/admin/especies/<species_id>/reindex")
 @login_required
 def admin_reindex(species_id):
@@ -442,6 +587,8 @@ def admin_reindex(species_id):
     return redirect(url_for("admin_species_edit", species_id=sid))
 
 # --------- CHAT API (RAG) ---------
+
+
 @app.post("/api/chat")
 def api_chat():
     data = request.get_json(silent=True) or {}
@@ -465,7 +612,8 @@ def api_chat():
     except Exception as e:
         chunks = []
     if chunks:
-        museum_context = "FRAGMENTOS RELEVANTES DEL MUSEO (RAG):\n" + "\n\n".join([f"- {c['text']}" for c in chunks])
+        museum_context = "FRAGMENTOS RELEVANTES DEL MUSEO (RAG):\n" + "\n\n".join([
+            f"- {c['text']}" for c in chunks])
     else:
         museum_context = "FRAGMENTOS RELEVANTES DEL MUSEO (RAG): No hay info indexada o no se pudo extraer."
 
@@ -489,20 +637,26 @@ def api_chat():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 # --------- ERRORS ---------
+
+
 @app.errorhandler(404)
 def not_found(e):
     return render_template("404.html", msg="No encontrado"), 404
+
 
 @app.errorhandler(403)
 def forbidden(e):
     return render_template("404.html", msg="Acceso denegado"), 403
 
 # --------- CLI ---------
+
+
 @app.cli.command("init-db")
 def init_db():
     with app.app_context():
         db.create_all()
     print("✅ DB inicializada")
+
 
 @app.cli.command("create-admin")
 def create_admin():
@@ -519,6 +673,7 @@ def create_admin():
         db.session.commit()
     print(f"✅ Admin creado: {username} / {password}")
 
+
 @app.cli.command("create-user")
 def create_user():
     username = os.getenv("USER_NAME", "user")
@@ -533,6 +688,7 @@ def create_user():
         db.session.add(u)
         db.session.commit()
     print(f"✅ Usuario creado: {username} / {password}")
+
 
 @app.cli.command("seed")
 def seed():
@@ -552,7 +708,8 @@ def seed():
             map_embed_url="",
             museo_info="Dato del museo: símbolo cultural en varias regiones andinas."
         )
-        sp.curiosidades = ["Planea largas distancias", "Aprovecha corrientes térmicas"]
+        sp.curiosidades = ["Planea largas distancias",
+                           "Aprovecha corrientes térmicas"]
         db.session.add(sp)
         db.session.commit()
         try:
@@ -560,6 +717,7 @@ def seed():
         except Exception:
             pass
     print("✅ Seed aplicado")
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
