@@ -140,8 +140,16 @@ def api_chat_stream():
     import requests
     import urllib.parse
 
-    def wiki_find_best_title(query: str) -> str:
-        """Busca el mejor título en Wikipedia ES usando 'search'."""
+    def looks_like_idk(text: str) -> bool:
+        t = (text or "").lower()
+        triggers = [
+            "no tengo información", "no tengo datos", "no hay información",
+            "no hay datos", "no está en el contexto", "no se menciona",
+            "no puedo responder", "no es posible responder"
+        ]
+        return any(x in t for x in triggers)
+
+    def wiki_best_title(query: str) -> str:
         if not query:
             return ""
         q = urllib.parse.quote(query)
@@ -155,14 +163,11 @@ def api_chat_stream():
                 return ""
             data = r.json()
             results = data.get("query", {}).get("search", [])
-            if not results:
-                return ""
-            return (results[0].get("title") or "").strip()
+            return (results[0].get("title") or "").strip() if results else ""
         except Exception:
             return ""
 
-    def wiki_extract_by_title(title: str, max_chars: int = 2500) -> str:
-        """Extrae texto plano de Wikipedia ES dado un título."""
+    def wiki_extract(title: str, max_chars: int = 2500) -> str:
         if not title:
             return ""
         t = urllib.parse.quote(title)
@@ -180,9 +185,7 @@ def api_chat_stream():
                 return ""
             page = next(iter(pages.values()))
             text = (page.get("extract") or "").strip()
-            if not text:
-                return ""
-            return text[:max_chars].strip()
+            return text[:max_chars].strip() if text else ""
         except Exception:
             return ""
 
@@ -202,68 +205,67 @@ def api_chat_stream():
     user_id = current_user.id if current_user.is_authenticated else None
     structured = build_structured_context(user_id, sp)
 
-    # 1) RAG del museo
+    # --- RAG ---
     try:
         chunks = get_vs().query_species(species_id, user_msg, k=4)
     except Exception:
         chunks = []
 
-    museo_context = ""
-    if chunks:
-        museo_context = "Contexto del museo (RAG):\n" + \
-            "\n\n".join([f"- {c['text']}" for c in chunks])
-    else:
-        museo_context = "Contexto del museo (RAG): No hay información del museo indexada para esta especie."
+    museo_context = (
+        "Fragmentos del museo (RAG):\n" +
+        "\n\n".join([f"- {c['text']}" for c in chunks])
+    ) if chunks else "Fragmentos del museo (RAG): No hay información del museo indexada o relevante."
 
-    # 2) Wikipedia fallback SOLO si no hay RAG
-    wiki_context = ""
-    used_wiki = False
-    if not chunks:
-        # intentamos varias queries para que funcione aunque el nombre esté raro
-        candidates = []
-        if (sp.nombre_cientifico or "").strip():
-            candidates.append(sp.nombre_cientifico.strip())
-        if (sp.nombre_comun or "").strip():
-            candidates.append(sp.nombre_comun.strip())
-            candidates.append(sp.nombre_comun.strip() +
-                              " andino")  # ayuda para “Cóndor”
-        # título real
-        for cand in candidates:
-            title = wiki_find_best_title(cand)
-            if title:
-                extract = wiki_extract_by_title(title)
-                if extract:
-                    wiki_context = f"Contexto de apoyo (Wikipedia: {title}):\n{extract}"
-                    used_wiki = True
-                    print("[WIKI] usado para", species_id,
-                          "->", wiki_context[:60])
-                    break
-
-    system = (
+    system_rag = (
         "Eres un guía del museo. Responde en español, claro y amable.\n"
-        "Responde SOLO una vez.\n"
-        "Máximo 3 frases.\n"
-        "NO hagas preguntas ni sugieras preguntas.\n"
-        "NO uses 'Usuario:'/'Asistente:'.\n"
-        "Si usas Wikipedia, al final agrega exactamente una línea: 'Fuente: Wikipedia'.\n"
-        "Si NO hay información suficiente ni en el museo ni en Wikipedia, di: 'No tengo información suficiente para responder.'\n"
-        "No inventes datos."
+        "Responde SOLO una vez, sin preguntas adicionales.\n"
+        "Usa SOLO el contexto proporcionado.\n"
+        "Si no alcanza, di claramente que no hay información suficiente."
     )
 
-    full_context = (
-        "Contexto BD (ficha):\n" + structured + "\n\n" +
-        museo_context + ("\n\n" + wiki_context if wiki_context else "")
+    messages_rag = [
+        {"role": "system", "content": system_rag},
+        {"role": "system",
+            "content": "Ficha (BD):\n" + structured + "\n\n" + museo_context},
+        {"role": "user", "content": user_msg},
+    ]
+
+    # Paso 1: respuesta rápida (sin streaming) para decidir si toca Wikipedia
+    first = llm.chat(messages_rag)
+
+    if not looks_like_idk(first):
+        def gen_ok():
+            yield first
+        return Response(stream_with_context(gen_ok()), mimetype="text/plain; charset=utf-8")
+
+    # --- Wikipedia fallback ---
+    query_name = (sp.nombre_cientifico or sp.nombre_comun or "").strip()
+    title = wiki_best_title(query_name) or wiki_best_title(
+        (sp.nombre_comun or "").strip())
+    extract = wiki_extract(title)
+
+    if not extract:
+        def gen_no():
+            yield first
+        return Response(stream_with_context(gen_no()), mimetype="text/plain; charset=utf-8")
+
+    system_wiki = (
+        "Eres un guía del museo. Responde en español, claro y amable.\n"
+        "Interpreta la respuesta basándote SOLO en el texto de Wikipedia provisto.\n"
+        "Responde SOLO una vez, sin preguntas adicionales.\n"
+        "Al final añade exactamente: 'Fuente externa: Wikipedia (puede contener errores)'."
     )
 
-    messages = [
-        {"role": "system", "content": system},
-        {"role": "system", "content": full_context},
+    messages_wiki = [
+        {"role": "system", "content": system_wiki},
+        {"role": "system",
+            "content": f"Texto Wikipedia (título: {title}):\n{extract}"},
         {"role": "user", "content": user_msg},
     ]
 
     def generate():
         try:
-            for chunk in llm.stream(messages):
+            for chunk in llm.stream(messages_wiki):
                 yield chunk
         except Exception as e:
             yield f"\n\n[ERROR] {e}"

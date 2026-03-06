@@ -96,15 +96,13 @@
             <a class="rounded-xl border px-3 py-1 hover:bg-white" href="{{ url_for('static', filename=d.stored_path) }}"
               target="_blank">Abrir</a>
 
-            <!-- ESTE FORM NO ESTÁ ANIDADO: es independiente dentro del mismo documento,
-                       pero HTML no permite form dentro de form, por eso lo dejamos como botón con forma de link -->
-            <form method="post" action="{{ url_for('admin_doc_delete', species_id=item.id, doc_id=d.id) }}"
-              onsubmit="return confirm('¿Eliminar este documento?');">
-              <button type="submit"
-                class="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1 text-rose-700 hover:bg-rose-100">
-                Eliminar
-              </button>
-            </form>
+            <!-- ✅ SIN FORM ANIDADO: botón que envía a otra ruta -->
+            <button type="submit" formmethod="post"
+              formaction="{{ url_for('admin_doc_delete', species_id=item.id, doc_id=d.id) }}"
+              onclick="return confirm('¿Eliminar este documento?');"
+              class="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1 text-rose-700 hover:bg-rose-100">
+              Eliminar
+            </button>
           </div>
         </li>
         {% endfor %}
@@ -124,7 +122,7 @@
     </div>
   </form>
 
-  <!-- FORM SEPARADO (FUERA DEL FORM PRINCIPAL): Reindexar -->
+  <!-- Reindex separado -->
   {% if item %}
   <form class="mt-4" method="post" action="{{ url_for('admin_reindex', species_id=item.id) }}">
     <button type="submit" class="rounded-2xl border px-4 py-2 text-sm hover:bg-white">
