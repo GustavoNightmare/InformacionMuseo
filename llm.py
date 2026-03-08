@@ -8,7 +8,6 @@ class LLMClient:
     Ollama /api/chat:
     - chat(messages) -> str
     - stream(messages) -> generator[str]
-    Ignora cualquier "thinking" y devuelve solo message.content
     """
 
     def __init__(self):
@@ -16,11 +15,10 @@ class LLMClient:
         self.chat_url = os.getenv(
             "OLLAMA_CHAT_URL", self.base_url.rstrip("/") + "/api/chat")
         self.model = os.getenv("OLLAMA_CHAT_MODEL", "llama3.1:8b")
-
         self.keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
         self.temperature = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
 
-        # Para modelos "thinking" (Qwen, etc.): lo apagamos
+        # apaga thinking si algún modelo lo trae
         self.think = os.getenv(
             "OLLAMA_THINK", "false").lower() in ("1", "true", "yes")
 
@@ -30,7 +28,7 @@ class LLMClient:
             "messages": messages,
             "stream": False,
             "keep_alive": self.keep_alive,
-            "think": self.think,  # false recomendado
+            "think": self.think,
             "options": {"temperature": self.temperature},
         }
         r = requests.post(self.chat_url, json=payload, timeout=(10, None))
@@ -45,7 +43,7 @@ class LLMClient:
             "messages": messages,
             "stream": True,
             "keep_alive": self.keep_alive,
-            "think": self.think,  # false recomendado
+            "think": self.think,
             "options": {"temperature": self.temperature},
         }
 

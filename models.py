@@ -1,4 +1,3 @@
-# models.py
 from flask_sqlalchemy import SQLAlchemy
 from flask_login import UserMixin
 from werkzeug.security import generate_password_hash, check_password_hash
@@ -23,17 +22,14 @@ class User(UserMixin, db.Model):
 
 
 class Species(db.Model):
-    # El QR trae este ID: "condor-001"
     id = db.Column(db.String(64), primary_key=True)
 
-    # Datos generales
     nombre_comun = db.Column(db.String(200), nullable=False)
     nombre_cientifico = db.Column(db.String(200), nullable=True)
 
-    # NUEVO: taxonomía básica para comparaciones en recorrido
+    # NUEVO: para comparar especies del recorrido
     familia = db.Column(db.String(120), nullable=True)  # ej: Cathartidae
-    # opcional ej: Cathartiformes
-    orden = db.Column(db.String(120), nullable=True)
+    orden = db.Column(db.String(120), nullable=True)    # ej: Cathartiformes
 
     descripcion = db.Column(db.Text, nullable=True)
     habitat = db.Column(db.Text, nullable=True)
@@ -42,8 +38,8 @@ class Species(db.Model):
     zonas = db.Column(db.Text, nullable=True)
     map_embed_url = db.Column(db.String(600), nullable=True)
 
-    imagen = db.Column(db.String(300), nullable=True)  # uploads/<id>/img...
-    audio = db.Column(db.String(300), nullable=True)   # uploads/<id>/audio...
+    imagen = db.Column(db.String(300), nullable=True)
+    audio = db.Column(db.String(300), nullable=True)
 
     museo_info = db.Column(db.Text, nullable=True)
 
@@ -70,7 +66,7 @@ class MuseumDoc(db.Model):
 
     stored_path = db.Column(db.String(400), nullable=False)
     original_name = db.Column(db.String(255), nullable=False)
-    file_type = db.Column(db.String(20), nullable=False)  # pdf|docx|txt
+    file_type = db.Column(db.String(20), nullable=False)
     extracted_text = db.Column(db.Text, nullable=True)
 
     created_at = db.Column(
@@ -86,7 +82,7 @@ class Visit(db.Model):
         db.DateTime, default=datetime.utcnow, nullable=False)
 
 
-# NUEVO: memoria de conversación por usuario + especie
+# NUEVO: memoria de chat por usuario + especie
 class ChatTurn(db.Model):
     id = db.Column(db.Integer, primary_key=True)
 

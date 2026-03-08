@@ -121,10 +121,6 @@ def get_vs():
 
 
 def get_chat_history(user_id: int, species_id: str, limit: int = 8):
-    """
-    Devuelve los últimos N turnos (user/assistant) de ese usuario para esa especie,
-    ordenados del más viejo al más nuevo.
-    """
     turns = (ChatTurn.query
              .filter_by(user_id=user_id, species_id=species_id)
              .order_by(ChatTurn.created_at.desc())
@@ -135,24 +131,20 @@ def get_chat_history(user_id: int, species_id: str, limit: int = 8):
 
 
 def save_chat_turns(user_id: int, species_id: str, user_text: str, assistant_text: str, keep_last: int = 60):
-    """
-    Guarda 2 turnos (user + assistant) y limita el historial para no crecer infinito.
-    """
     db.session.add(ChatTurn(user_id=user_id, species_id=species_id,
                    role="user", content=user_text))
     db.session.add(ChatTurn(user_id=user_id, species_id=species_id,
                    role="assistant", content=assistant_text))
     db.session.commit()
 
-    # Limpieza: dejar solo los últimos keep_last turnos
     old = (ChatTurn.query
            .filter_by(user_id=user_id, species_id=species_id)
            .order_by(ChatTurn.created_at.desc())
            .offset(keep_last)
            .all())
+    for t in old:
+        db.session.delete(t)
     if old:
-        for t in old:
-            db.session.delete(t)
         db.session.commit()
 
 
@@ -171,10 +163,21 @@ def favicon():
     return "", 204
 
 
+@app.get("/logout", endpoint="logout")
+@login_required
+def logout_view():
+    logout_user()
+    return redirect(url_for("index"))
+
+
 @app.post("/api/chat_stream")
 def api_chat_stream():
     import requests
     import urllib.parse
+
+    # 1) exigir login (para memoria individual)
+    if not current_user.is_authenticated:
+        return Response("LOGIN_REQUIRED", status=401, mimetype="text/plain")
 
     def wiki_search_title(query: str) -> str:
         if not query:
@@ -216,6 +219,26 @@ def api_chat_stream():
         except Exception:
             return ""
 
+    def last_pair(history: list[dict]) -> tuple[str, str]:
+        """
+        Devuelve (ultima_pregunta_usuario, ultima_respuesta_asistente) del historial.
+        Si no hay, retorna ("","").
+        """
+        if not history:
+            return "", ""
+        # buscamos desde el final: assistant y el user previo
+        last_assistant = ""
+        last_user = ""
+        for i in range(len(history) - 1, -1, -1):
+            if history[i]["role"] == "assistant" and not last_assistant:
+                last_assistant = history[i]["content"]
+                # seguimos buscando user anterior
+                continue
+            if last_assistant and history[i]["role"] == "user":
+                last_user = history[i]["content"]
+                break
+        return last_user, last_assistant
+
     data = request.get_json(silent=True) or {}
     species_id = sanitize_id(data.get("species_id") or "")
     user_msg = (data.get("message") or "").strip()
@@ -229,47 +252,48 @@ def api_chat_stream():
     if not sp:
         return Response("ERROR: Especie no encontrada", status=404, mimetype="text/plain")
 
-    # -------- Memoria: historial de chat (solo si hay login) --------
-    history = []
-    authed_user_id = None
-    if current_user.is_authenticated:
-        authed_user_id = current_user.id
-        history = get_chat_history(authed_user_id, species_id, limit=8)
+    # -------- Memoria (historial): tomamos SOLO el último par --------
+    hist = get_chat_history(current_user.id, species_id, limit=10)
+    prev_q, prev_a = last_pair(hist)
 
-    # -------- Memoria: recorrido (últimas especies vistas por el usuario) --------
+    memory_note = ""
+    if prev_q and prev_a:
+        memory_note = (
+            "Contexto de conversación previa (para referencias como '¿por qué?' / '¿cómo así?'):\n"
+            f"- Pregunta anterior del usuario: {prev_q}\n"
+            f"- Tu respuesta anterior: {prev_a}\n\n"
+            "Regla: NO repitas la respuesta anterior completa. "
+            "Responde SOLO a la pregunta NUEVA del usuario, usando la respuesta anterior solo como referencia breve."
+        )
+
+    # -------- Recorrido (últimas escaneadas) --------
     tour_note = ""
-    if authed_user_id:
-        last = (db.session.query(Visit, Species)
-                .join(Species, Species.id == Visit.species_id)
-                .filter(Visit.user_id == authed_user_id)
-                .order_by(Visit.visited_at.desc())
-                .limit(8)
-                .all())
+    last = (db.session.query(Visit, Species)
+            .join(Species, Species.id == Visit.species_id)
+            .filter(Visit.user_id == current_user.id)
+            .order_by(Visit.visited_at.desc())
+            .limit(8)
+            .all())
 
-        if last:
-            seen_lines = []
-            same_family = []
-            current_family = (sp.familia or "").strip().lower()
+    if last:
+        lines = []
+        current_family = (sp.familia or "").strip().lower()
+        same_family = []
+        for v, s in last:
+            fam = s.familia or "?"
+            lines.append(f"- {s.nombre_comun} ({s.id}) — familia: {fam}")
+            if current_family and s.id != sp.id and (s.familia or "").strip().lower() == current_family:
+                same_family.append(f"{s.nombre_comun} ({s.id})")
 
-            for v, s in last:
-                fam = (s.familia or "?")
-                seen_lines.append(
-                    f"- {s.nombre_comun} ({s.id}) — familia: {fam}")
+        tour_note = "Recorrido reciente del usuario:\n" + "\n".join(lines)
+        if same_family:
+            tour_note += "\n\nRelación:\n" + \
+                f"Esta especie comparte familia ({sp.familia}) con: " + \
+                ", ".join(same_family) + "."
 
-                if current_family and s.id != sp.id and (s.familia or "").strip().lower() == current_family:
-                    same_family.append(f"{s.nombre_comun} ({s.id})")
+    structured = build_structured_context(current_user.id, sp)
 
-            tour_note = "Recorrido reciente del usuario:\n" + \
-                "\n".join(seen_lines)
-            if same_family:
-                tour_note += "\n\nRelación con lo visto antes:\n" + (
-                    f"Esta especie comparte la familia **{sp.familia}** con: " + ", ".join(
-                        same_family) + "."
-                )
-
-    structured = build_structured_context(authed_user_id, sp)
-
-    # -------- 1) RAG del museo --------
+    # -------- 1) RAG --------
     try:
         chunks = get_vs().query_species(species_id, user_msg, k=4)
     except Exception:
@@ -282,8 +306,8 @@ def api_chat_stream():
     else:
         rag_context = "Fragmentos del museo (RAG): No hay información del museo indexada o relevante."
 
-    # -------- 2) Si no hay RAG, buscar Wikipedia --------
-    wiki_context = ""
+    # -------- 2) Web fallback SOLO si NO hay chunks --------
+    wiki_text = ""
     wiki_url = ""
     if len(chunks) == 0:
         candidates = []
@@ -300,39 +324,38 @@ def api_chat_stream():
                 break
 
         if title:
-            wiki_context = wiki_extract(title)
+            wiki_text = wiki_extract(title)
             wiki_url = "https://es.wikipedia.org/wiki/" + \
                 urllib.parse.quote(title.replace(" ", "_"))
 
-        print(
-            f"[WEB] use_web={len(chunks) == 0} species={species_id} title='{title}' chars={len(wiki_context)}")
-
-    # -------- Prompt --------
+    # -------- System prompt (clave para evitar duplicar) --------
     system = (
         "Eres un guía del museo. Responde en español, claro y amable.\n"
-        "Usa el historial de conversación si la pregunta es de seguimiento.\n"
-        "Responde SOLO una vez. NO hagas preguntas ni sugieras preguntas.\n"
-        "Si el usuario pide ejemplos (p. ej. '¿como cuáles?'), da 3–5 ejemplos.\n"
-        "Si usas Wikipedia, añade AL FINAL exactamente una línea:\n"
+        "Responde SOLO a la ÚLTIMA pregunta del usuario.\n"
+        "Si es una pregunta de seguimiento (por qué / cómo / entonces / como cuáles), "
+        "NO repitas la respuesta anterior completa: responde directo al punto.\n"
+        "NO hagas preguntas ni sugieras preguntas.\n"
+        "Si el usuario pide ejemplos ('¿como cuáles?'), da 3–5 ejemplos concretos.\n"
+        "Si usas Wikipedia, añade al final EXACTAMENTE:\n"
         "Fuente externa: Wikipedia (puede contener errores) — <URL>\n"
         "No inventes datos."
     )
 
     full_context = (
         "Ficha (BD):\n" + structured + "\n\n" +
+        (memory_note + "\n\n" if memory_note else "") +
         (tour_note + "\n\n" if tour_note else "") +
         rag_context +
-        (("\n\nTexto Wikipedia:\n" + wiki_context +
-         "\n\nURL: " + wiki_url) if wiki_context else "")
+        (("\n\nTexto Wikipedia:\n" + wiki_text +
+         "\n\nURL: " + wiki_url) if wiki_text else "")
     )
 
+    # ✅ IMPORTANTÍSIMO: NO metemos todo el historial crudo (eso causaba la repetición)
     messages = [
         {"role": "system", "content": system},
         {"role": "system", "content": full_context},
+        {"role": "user", "content": user_msg},
     ]
-    # memoria de chat
-    messages.extend(history)
-    messages.append({"role": "user", "content": user_msg})
 
     def generate():
         full_answer = ""
@@ -341,15 +364,13 @@ def api_chat_stream():
                 full_answer += chunk
                 yield chunk
 
-            # Guardar memoria (solo si está logueado)
-            if authed_user_id:
-                # Si usó Wikipedia, forzamos la línea final (por si el modelo se olvida)
-                if wiki_context and wiki_url and ("Fuente externa:" not in full_answer):
-                    full_answer = full_answer.rstrip(
-                    ) + f"\n\nFuente externa: Wikipedia (puede contener errores) — {wiki_url}"
+            # si usó wiki y el modelo olvidó la línea final, la pegamos
+            if wiki_text and wiki_url and ("Fuente externa: Wikipedia" not in full_answer):
+                full_answer = full_answer.rstrip(
+                ) + f"\n\nFuente externa: Wikipedia (puede contener errores) — {wiki_url}"
 
-                save_chat_turns(authed_user_id, species_id,
-                                user_msg, full_answer.strip(), keep_last=60)
+            save_chat_turns(current_user.id, species_id,
+                            user_msg, full_answer.strip(), keep_last=60)
 
         except Exception as e:
             yield f"\n\n[ERROR] {e}"
@@ -378,14 +399,13 @@ def login_post():
     if not user or not user.check_password(password):
         flash("Usuario o contraseña incorrectos", "error")
         return redirect(url_for("login"))
+
     login_user(user)
-    return redirect(url_for("index"))
 
+    next_url = request.args.get("next")
+    if next_url and next_url.startswith("/"):
+        return redirect(next_url)
 
-@app.get("/logout")
-@login_required
-def logout():
-    logout_user()
     return redirect(url_for("index"))
 # --------------------------------------historial--------------
 
@@ -418,9 +438,57 @@ def especies():
             (Species.nombre_comun.ilike(f"%{q}%")) |
             (Species.nombre_cientifico.ilike(f"%{q}%"))
         )
-    items = query.order_by(Species.nombre_comun.asc()).all()
-    return render_template("especies.html", items=items, q=q)
 
+    items = query.order_by(Species.nombre_comun.asc()).all()
+
+    total_count = Species.query.count()
+
+    scanned_ids = set()
+    scanned_count = 0
+    if current_user.is_authenticated:
+        rows = (db.session.query(Visit.species_id)
+                .filter(Visit.user_id == current_user.id)
+                .distinct()
+                .all())
+        scanned_ids = set([r[0] for r in rows])
+        scanned_count = len(scanned_ids)
+
+    # escaneos totales por especie (usuarios distintos)
+    counts = (db.session.query(Visit.species_id, db.func.count(db.func.distinct(Visit.user_id)))
+              .group_by(Visit.species_id)
+              .all())
+    scan_counts = {sid: c for sid, c in counts}
+
+    return render_template(
+        "especies.html",
+        items=items, q=q,
+        total_count=total_count,
+        scanned_count=scanned_count,
+        scanned_ids=scanned_ids,
+        scan_counts=scan_counts
+    )
+# -------------------------
+
+
+@app.get("/scan/<species_id>")
+@login_required
+def scan_species(species_id):
+    sid = sanitize_id(species_id)
+    if not sid or not ID_RE.match(sid):
+        abort(404)
+
+    item = db.session.get(Species, sid)
+    if not item:
+        abort(404)
+
+    # Guardar “escaneada” UNA sola vez por usuario
+    exists = Visit.query.filter_by(
+        user_id=current_user.id, species_id=item.id).first()
+    if not exists:
+        db.session.add(Visit(user_id=current_user.id, species_id=item.id))
+        db.session.commit()
+
+    return redirect(url_for("especie", species_id=item.id))
 # ----- DETAIL -----
 
 
@@ -434,11 +502,12 @@ def especie(species_id):
     if not item:
         abort(404)
 
+    is_scanned = False
     if current_user.is_authenticated:
-        db.session.add(Visit(user_id=current_user.id, species_id=item.id))
-        db.session.commit()
+        is_scanned = Visit.query.filter_by(
+            user_id=current_user.id, species_id=item.id).first() is not None
 
-    return render_template("especie.html", item=item)
+    return render_template("especie.html", item=item, is_scanned=is_scanned)
 
 # --------- ADMIN CRUD ---------
 
