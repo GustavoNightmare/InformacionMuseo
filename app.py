@@ -6,7 +6,7 @@ import requests
 from flask import Flask, render_template, redirect, url_for, request, abort, jsonify, flash, Response, stream_with_context
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
 from werkzeug.utils import secure_filename
-
+from models import db, User, Species, MuseumDoc, Visit, ChatTurn
 from PyPDF2 import PdfReader
 import docx
 
@@ -120,6 +120,42 @@ def get_vs():
     return _VS
 
 
+def get_chat_history(user_id: int, species_id: str, limit: int = 8):
+    """
+    Devuelve los últimos N turnos (user/assistant) de ese usuario para esa especie,
+    ordenados del más viejo al más nuevo.
+    """
+    turns = (ChatTurn.query
+             .filter_by(user_id=user_id, species_id=species_id)
+             .order_by(ChatTurn.created_at.desc())
+             .limit(limit)
+             .all())
+    turns = list(reversed(turns))
+    return [{"role": t.role, "content": t.content} for t in turns]
+
+
+def save_chat_turns(user_id: int, species_id: str, user_text: str, assistant_text: str, keep_last: int = 60):
+    """
+    Guarda 2 turnos (user + assistant) y limita el historial para no crecer infinito.
+    """
+    db.session.add(ChatTurn(user_id=user_id, species_id=species_id,
+                   role="user", content=user_text))
+    db.session.add(ChatTurn(user_id=user_id, species_id=species_id,
+                   role="assistant", content=assistant_text))
+    db.session.commit()
+
+    # Limpieza: dejar solo los últimos keep_last turnos
+    old = (ChatTurn.query
+           .filter_by(user_id=user_id, species_id=species_id)
+           .order_by(ChatTurn.created_at.desc())
+           .offset(keep_last)
+           .all())
+    if old:
+        for t in old:
+            db.session.delete(t)
+        db.session.commit()
+
+
 @login_manager.user_loader
 def load_user(user_id):
     return db.session.get(User, int(user_id))
@@ -140,16 +176,7 @@ def api_chat_stream():
     import requests
     import urllib.parse
 
-    def looks_like_idk(text: str) -> bool:
-        t = (text or "").lower()
-        triggers = [
-            "no tengo información", "no tengo datos", "no hay información",
-            "no hay datos", "no está en el contexto", "no se menciona",
-            "no puedo responder", "no es posible responder"
-        ]
-        return any(x in t for x in triggers)
-
-    def wiki_best_title(query: str) -> str:
+    def wiki_search_title(query: str) -> str:
         if not query:
             return ""
         q = urllib.parse.quote(query)
@@ -202,71 +229,128 @@ def api_chat_stream():
     if not sp:
         return Response("ERROR: Especie no encontrada", status=404, mimetype="text/plain")
 
-    user_id = current_user.id if current_user.is_authenticated else None
-    structured = build_structured_context(user_id, sp)
+    # -------- Memoria: historial de chat (solo si hay login) --------
+    history = []
+    authed_user_id = None
+    if current_user.is_authenticated:
+        authed_user_id = current_user.id
+        history = get_chat_history(authed_user_id, species_id, limit=8)
 
-    # --- RAG ---
+    # -------- Memoria: recorrido (últimas especies vistas por el usuario) --------
+    tour_note = ""
+    if authed_user_id:
+        last = (db.session.query(Visit, Species)
+                .join(Species, Species.id == Visit.species_id)
+                .filter(Visit.user_id == authed_user_id)
+                .order_by(Visit.visited_at.desc())
+                .limit(8)
+                .all())
+
+        if last:
+            seen_lines = []
+            same_family = []
+            current_family = (sp.familia or "").strip().lower()
+
+            for v, s in last:
+                fam = (s.familia or "?")
+                seen_lines.append(
+                    f"- {s.nombre_comun} ({s.id}) — familia: {fam}")
+
+                if current_family and s.id != sp.id and (s.familia or "").strip().lower() == current_family:
+                    same_family.append(f"{s.nombre_comun} ({s.id})")
+
+            tour_note = "Recorrido reciente del usuario:\n" + \
+                "\n".join(seen_lines)
+            if same_family:
+                tour_note += "\n\nRelación con lo visto antes:\n" + (
+                    f"Esta especie comparte la familia **{sp.familia}** con: " + ", ".join(
+                        same_family) + "."
+                )
+
+    structured = build_structured_context(authed_user_id, sp)
+
+    # -------- 1) RAG del museo --------
     try:
         chunks = get_vs().query_species(species_id, user_msg, k=4)
     except Exception:
         chunks = []
 
-    museo_context = (
-        "Fragmentos del museo (RAG):\n" +
-        "\n\n".join([f"- {c['text']}" for c in chunks])
-    ) if chunks else "Fragmentos del museo (RAG): No hay información del museo indexada o relevante."
+    rag_context = ""
+    if chunks:
+        rag_context = "Fragmentos del museo (RAG):\n" + \
+            "\n\n".join([f"- {c['text']}" for c in chunks])
+    else:
+        rag_context = "Fragmentos del museo (RAG): No hay información del museo indexada o relevante."
 
-    system_rag = (
+    # -------- 2) Si no hay RAG, buscar Wikipedia --------
+    wiki_context = ""
+    wiki_url = ""
+    if len(chunks) == 0:
+        candidates = []
+        if (sp.nombre_cientifico or "").strip():
+            candidates.append(sp.nombre_cientifico.strip())
+        if (sp.nombre_comun or "").strip():
+            candidates.append(sp.nombre_comun.strip())
+            candidates.append(sp.nombre_comun.strip() + " andino")
+
+        title = ""
+        for cand in candidates:
+            title = wiki_search_title(cand)
+            if title:
+                break
+
+        if title:
+            wiki_context = wiki_extract(title)
+            wiki_url = "https://es.wikipedia.org/wiki/" + \
+                urllib.parse.quote(title.replace(" ", "_"))
+
+        print(
+            f"[WEB] use_web={len(chunks) == 0} species={species_id} title='{title}' chars={len(wiki_context)}")
+
+    # -------- Prompt --------
+    system = (
         "Eres un guía del museo. Responde en español, claro y amable.\n"
-        "Responde SOLO una vez, sin preguntas adicionales.\n"
-        "Usa SOLO el contexto proporcionado.\n"
-        "Si no alcanza, di claramente que no hay información suficiente."
+        "Usa el historial de conversación si la pregunta es de seguimiento.\n"
+        "Responde SOLO una vez. NO hagas preguntas ni sugieras preguntas.\n"
+        "Si el usuario pide ejemplos (p. ej. '¿como cuáles?'), da 3–5 ejemplos.\n"
+        "Si usas Wikipedia, añade AL FINAL exactamente una línea:\n"
+        "Fuente externa: Wikipedia (puede contener errores) — <URL>\n"
+        "No inventes datos."
     )
 
-    messages_rag = [
-        {"role": "system", "content": system_rag},
-        {"role": "system",
-            "content": "Ficha (BD):\n" + structured + "\n\n" + museo_context},
-        {"role": "user", "content": user_msg},
-    ]
-
-    # Paso 1: respuesta rápida (sin streaming) para decidir si toca Wikipedia
-    first = llm.chat(messages_rag)
-
-    if not looks_like_idk(first):
-        def gen_ok():
-            yield first
-        return Response(stream_with_context(gen_ok()), mimetype="text/plain; charset=utf-8")
-
-    # --- Wikipedia fallback ---
-    query_name = (sp.nombre_cientifico or sp.nombre_comun or "").strip()
-    title = wiki_best_title(query_name) or wiki_best_title(
-        (sp.nombre_comun or "").strip())
-    extract = wiki_extract(title)
-
-    if not extract:
-        def gen_no():
-            yield first
-        return Response(stream_with_context(gen_no()), mimetype="text/plain; charset=utf-8")
-
-    system_wiki = (
-        "Eres un guía del museo. Responde en español, claro y amable.\n"
-        "Interpreta la respuesta basándote SOLO en el texto de Wikipedia provisto.\n"
-        "Responde SOLO una vez, sin preguntas adicionales.\n"
-        "Al final añade exactamente: 'Fuente externa: Wikipedia (puede contener errores)'."
+    full_context = (
+        "Ficha (BD):\n" + structured + "\n\n" +
+        (tour_note + "\n\n" if tour_note else "") +
+        rag_context +
+        (("\n\nTexto Wikipedia:\n" + wiki_context +
+         "\n\nURL: " + wiki_url) if wiki_context else "")
     )
 
-    messages_wiki = [
-        {"role": "system", "content": system_wiki},
-        {"role": "system",
-            "content": f"Texto Wikipedia (título: {title}):\n{extract}"},
-        {"role": "user", "content": user_msg},
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "system", "content": full_context},
     ]
+    # memoria de chat
+    messages.extend(history)
+    messages.append({"role": "user", "content": user_msg})
 
     def generate():
+        full_answer = ""
         try:
-            for chunk in llm.stream(messages_wiki):
+            for chunk in llm.stream(messages):
+                full_answer += chunk
                 yield chunk
+
+            # Guardar memoria (solo si está logueado)
+            if authed_user_id:
+                # Si usó Wikipedia, forzamos la línea final (por si el modelo se olvida)
+                if wiki_context and wiki_url and ("Fuente externa:" not in full_answer):
+                    full_answer = full_answer.rstrip(
+                    ) + f"\n\nFuente externa: Wikipedia (puede contener errores) — {wiki_url}"
+
+                save_chat_turns(authed_user_id, species_id,
+                                user_msg, full_answer.strip(), keep_last=60)
+
         except Exception as e:
             yield f"\n\n[ERROR] {e}"
 
@@ -303,7 +387,24 @@ def login_post():
 def logout():
     logout_user()
     return redirect(url_for("index"))
+# --------------------------------------historial--------------
 
+
+def get_chat_history(user_id: int, species_id: str, limit: int = 8):
+    # últimos turnos (user+assistant), ordenados del más viejo al más nuevo
+    turns = (ChatTurn.query
+             .filter_by(user_id=user_id, species_id=species_id)
+             .order_by(ChatTurn.created_at.desc())
+             .limit(limit)
+             .all())
+    turns = list(reversed(turns))
+    return [{"role": t.role, "content": t.content} for t in turns]
+
+
+def save_turn(user_id: int, species_id: str, role: str, content: str):
+    db.session.add(
+        ChatTurn(user_id=user_id, species_id=species_id, role=role, content=content))
+    db.session.commit()
 # ----- LIST -----
 
 
@@ -435,6 +536,11 @@ def admin_species_new_post():
         nombre_comun=nombre_comun,
         nombre_cientifico=(request.form.get(
             "nombre_cientifico") or "").strip(),
+
+        # NUEVO
+        familia=(request.form.get("familia") or "").strip(),
+        orden=(request.form.get("orden") or "").strip(),
+
         descripcion=(request.form.get("descripcion") or "").strip(),
         habitat=(request.form.get("habitat") or "").strip(),
         dieta=(request.form.get("dieta") or "").strip(),
@@ -495,6 +601,8 @@ def admin_species_edit_post(species_id):
     item.nombre_comun = nombre_comun
     item.nombre_cientifico = (request.form.get(
         "nombre_cientifico") or "").strip()
+    item.familia = (request.form.get("familia") or "").strip()
+    item.orden = (request.form.get("orden") or "").strip()
     item.descripcion = (request.form.get("descripcion") or "").strip()
     item.habitat = (request.form.get("habitat") or "").strip()
     item.dieta = (request.form.get("dieta") or "").strip()
