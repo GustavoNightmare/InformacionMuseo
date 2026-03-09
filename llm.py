@@ -15,7 +15,7 @@ class LLMClient:
         self.base_url = os.getenv("OLLAMA_BASE_URL", "http://127.0.0.1:11434")
         self.chat_url = os.getenv(
             "OLLAMA_CHAT_URL", self.base_url.rstrip("/") + "/api/chat")
-        self.model = os.getenv("OLLAMA_CHAT_MODEL", "llama3.1:8b")
+        self.model = os.getenv("OLLAMA_CHAT_MODEL", "qwen3.5:4b")
 
         self.keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
         self.temperature = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
