@@ -393,8 +393,9 @@ def login():
 
 @app.post("/login")
 def login_post():
-    username = (request.form.get("username") or "").strip()
+    username = (request.form.get("username") or "").strip().lower()
     password = request.form.get("password") or ""
+
     user = User.query.filter_by(username=username).first()
     if not user or not user.check_password(password):
         flash("Usuario o contraseña incorrectos", "error")
@@ -406,6 +407,60 @@ def login_post():
     if next_url and next_url.startswith("/"):
         return redirect(next_url)
 
+    return redirect(url_for("index"))
+# --------------------------------------
+
+
+@app.get("/register")
+def register():
+    return render_template("register.html")
+
+
+@app.post("/register")
+def register_post():
+    nombre = (request.form.get("nombre") or "").strip()
+    edad_raw = (request.form.get("edad") or "").strip()
+    username = (request.form.get("username") or "").strip().lower()
+    password = request.form.get("password") or ""
+    password2 = request.form.get("password2") or ""
+
+    # Validaciones
+    if not nombre:
+        flash("El nombre es obligatorio.", "error")
+        return redirect(url_for("register"))
+
+    try:
+        edad = int(edad_raw)
+        if edad < 1 or edad > 120:
+            raise ValueError()
+    except Exception:
+        flash("La edad debe ser un número válido (1-120).", "error")
+        return redirect(url_for("register"))
+
+    if not username or len(username) < 3:
+        flash("El nombre de usuario debe tener al menos 3 caracteres.", "error")
+        return redirect(url_for("register"))
+
+    if password != password2:
+        flash("Las contraseñas no coinciden.", "error")
+        return redirect(url_for("register"))
+
+    if len(password) < 6:
+        flash("La contraseña debe tener al menos 6 caracteres.", "error")
+        return redirect(url_for("register"))
+
+    if User.query.filter_by(username=username).first():
+        flash("Ese nombre de usuario ya existe. Elige otro.", "error")
+        return redirect(url_for("register"))
+
+    # Crear usuario
+    u = User(nombre=nombre, edad=edad, username=username, is_admin=False)
+    u.set_password(password)
+    db.session.add(u)
+    db.session.commit()
+
+    login_user(u)
+    flash("Cuenta creada correctamente ✅", "ok")
     return redirect(url_for("index"))
 # --------------------------------------historial--------------
 
@@ -839,33 +894,40 @@ def init_db():
 
 @app.cli.command("create-admin")
 def create_admin():
-    username = os.getenv("ADMIN_USER", "admin")
+    username = os.getenv("ADMIN_USER", "admin").strip().lower()
     password = os.getenv("ADMIN_PASS", "admin123")
+
     with app.app_context():
         db.create_all()
         if User.query.filter_by(username=username).first():
             print("⚠️ Admin ya existe")
             return
-        u = User(username=username, is_admin=True)
+        u = User(nombre="Administrador", edad=99,
+                 username=username, is_admin=True)
         u.set_password(password)
         db.session.add(u)
         db.session.commit()
+
     print(f"✅ Admin creado: {username} / {password}")
 
 
 @app.cli.command("create-user")
 def create_user():
-    username = os.getenv("USER_NAME", "user")
+    username = os.getenv("USER_NAME", "user").strip().lower()
     password = os.getenv("USER_PASS", "user123")
+    nombre = os.getenv("USER_FULLNAME", "Usuario")
+    edad = int(os.getenv("USER_AGE", "20"))
+
     with app.app_context():
         db.create_all()
         if User.query.filter_by(username=username).first():
             print("⚠️ Usuario ya existe")
             return
-        u = User(username=username, is_admin=False)
+        u = User(nombre=nombre, edad=edad, username=username, is_admin=False)
         u.set_password(password)
         db.session.add(u)
         db.session.commit()
+
     print(f"✅ Usuario creado: {username} / {password}")
 
 

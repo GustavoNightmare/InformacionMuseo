@@ -1,61 +1,127 @@
 <!doctype html>
 <html lang="es">
+
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>{% block title %}BioScan{% endblock %}</title>
   <script src="https://cdn.tailwindcss.com"></script>
-  <style>.glass{backdrop-filter:blur(10px);background:rgba(255,255,255,.75)}</style>
+  <style>
+    .glass {
+      backdrop-filter: blur(10px);
+      background: rgba(255, 255, 255, .75)
+    }
+  </style>
 </head>
+
 <body class="min-h-screen bg-gradient-to-b from-emerald-50 via-white to-emerald-50 text-slate-900">
 
-<header class="sticky top-0 z-50 border-b border-emerald-100 bg-white/70 glass">
-  <div class="mx-auto max-w-5xl px-4 py-3 flex items-center justify-between">
-    <a href="{{ url_for('index') }}" class="flex items-center gap-2">
-      <div class="h-9 w-9 rounded-2xl bg-emerald-600 text-white grid place-items-center font-bold">B</div>
-      <div class="leading-tight">
-        <div class="font-semibold">BioScan</div>
-        <div class="text-xs text-slate-500">QR → Ficha + RAG</div>
-      </div>
-    </a>
+  <header class="sticky top-0 z-50 bg-white/90 backdrop-blur border-b border-emerald-100">
+    <div class="max-w-6xl mx-auto px-4 py-3 flex items-center justify-between gap-3">
 
-    <nav class="flex items-center gap-2">
-      <a href="{{ url_for('index') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Escanear</a>
-      <a href="{{ url_for('especies') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Especies</a>
+      <!-- Brand -->
+      <a href="{{ url_for('index') }}" class="flex items-center gap-3">
+        <div class="h-10 w-10 rounded-2xl bg-emerald-600 text-white grid place-items-center font-semibold">B</div>
+        <div class="leading-tight">
+          <div class="font-semibold">BioScan</div>
+          <div class="text-xs text-slate-500">QR → Ficha + RAG</div>
+        </div>
+      </a>
 
-      {% if current_user.is_authenticated and current_user.is_admin %}
+      <!-- Desktop menu -->
+      <nav class="hidden md:flex items-center gap-2">
+        <a href="{{ url_for('index') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Escanear</a>
+        <a href="{{ url_for('especies') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Especies</a>
+
+        {% if current_user.is_authenticated and current_user.is_admin %}
         <a href="{{ url_for('admin_species_list') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Admin</a>
-      {% endif %}
+        {% endif %}
 
-      {% if current_user.is_authenticated %}
+        <div class="w-px h-6 bg-slate-200 mx-1"></div>
+
+        {% if current_user.is_authenticated %}
+        <div class="text-sm text-slate-600 px-2">
+          Hola, <span class="font-semibold">{{ current_user.nombre if current_user.nombre else current_user.username
+            }}</span>
+        </div>
         <a href="{{ url_for('logout') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Salir</a>
-      {% else %}
+        {% else %}
         <a href="{{ url_for('login') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Entrar</a>
-      {% endif %}
-    </nav>
-  </div>
-</header>
+        <a href="{{ url_for('register') }}"
+          class="px-3 py-2 rounded-xl text-sm bg-emerald-600 text-white hover:bg-emerald-700">
+          Registrarse
+        </a>
+        {% endif %}
+      </nav>
 
-<main class="mx-auto max-w-5xl px-4 py-6">
-  {% with messages = get_flashed_messages(with_categories=true) %}
+      <!-- Mobile button -->
+      <button id="menuBtn" class="md:hidden px-3 py-2 rounded-xl border border-slate-200 text-sm hover:bg-slate-50">
+        ☰ Menú
+      </button>
+    </div>
+
+    <!-- Mobile dropdown -->
+    <div id="mobileMenu" class="md:hidden hidden border-t border-emerald-100 bg-white">
+      <div class="max-w-6xl mx-auto px-4 py-3 flex flex-col gap-2">
+        <a href="{{ url_for('index') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Escanear</a>
+        <a href="{{ url_for('especies') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Especies</a>
+
+        {% if current_user.is_authenticated and current_user.is_admin %}
+        <a href="{{ url_for('admin_species_list') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Admin</a>
+        {% endif %}
+
+        <div class="h-px bg-slate-200 my-1"></div>
+
+        {% if current_user.is_authenticated %}
+        <div class="text-sm text-slate-600 px-3">
+          Sesión: <span class="font-semibold">{{ current_user.nombre if current_user.nombre else current_user.username
+            }}</span>
+        </div>
+        <a href="{{ url_for('logout') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Salir</a>
+        {% else %}
+        <a href="{{ url_for('login') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Entrar</a>
+        <a href="{{ url_for('register') }}"
+          class="px-3 py-2 rounded-xl text-sm bg-emerald-600 text-white hover:bg-emerald-700">
+          Registrarse
+        </a>
+        {% endif %}
+      </div>
+    </div>
+
+    <script>
+      (function () {
+        const btn = document.getElementById("menuBtn");
+        const menu = document.getElementById("mobileMenu");
+        if (!btn || !menu) return;
+
+        btn.addEventListener("click", () => {
+          menu.classList.toggle("hidden");
+        });
+      })();
+    </script>
+  </header>
+
+  <main class="mx-auto max-w-5xl px-4 py-6">
+    {% with messages = get_flashed_messages(with_categories=true) %}
     {% if messages %}
-      <div class="mb-4 space-y-2">
-        {% for cat, msg in messages %}
-          <div class="rounded-2xl border p-3 text-sm
+    <div class="mb-4 space-y-2">
+      {% for cat, msg in messages %}
+      <div class="rounded-2xl border p-3 text-sm
             {% if cat=='error' %} border-rose-200 bg-rose-50 text-rose-800
             {% else %} border-emerald-200 bg-emerald-50 text-emerald-800 {% endif %}">
-            {{ msg }}
-          </div>
-        {% endfor %}
+        {{ msg }}
       </div>
+      {% endfor %}
+    </div>
     {% endif %}
-  {% endwith %}
-  {% block content %}{% endblock %}
-</main>
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
 
-<footer class="mx-auto max-w-5xl px-4 pb-8 text-xs text-slate-500">
-  <div class="border-t border-emerald-100 pt-4">Prototipo — Flask + QR + Vector DB + Chat</div>
-</footer>
+  <footer class="mx-auto max-w-5xl px-4 pb-8 text-xs text-slate-500">
+    <div class="border-t border-emerald-100 pt-4">Prototipo — Flask + QR + Vector DB + Chat</div>
+  </footer>
 
 </body>
+
 </html>

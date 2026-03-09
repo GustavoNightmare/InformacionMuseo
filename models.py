@@ -10,9 +10,16 @@ db = SQLAlchemy()
 class User(UserMixin, db.Model):
     id = db.Column(db.Integer, primary_key=True)
 
+    # NUEVO
+    nombre = db.Column(db.String(120), nullable=False)
+    edad = db.Column(db.Integer, nullable=False)
+
     username = db.Column(db.String(80), unique=True, nullable=False)
     password_hash = db.Column(db.String(255), nullable=False)
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
+
+    created_at = db.Column(
+        db.DateTime, default=datetime.utcnow, nullable=False)
 
     def set_password(self, password: str):
         self.password_hash = generate_password_hash(password)
