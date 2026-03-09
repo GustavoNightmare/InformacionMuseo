@@ -6,9 +6,8 @@ import requests
 class LLMClient:
     """
     Ollama /api/chat:
-    - chat(messages) -> str (no streaming)
-    - stream(messages) -> generator[str] (streaming)
-    Ignora razonamiento ("thinking") y entrega solo "content".
+    - chat(messages) -> str
+    - stream(messages) -> generator[str]
     """
 
     def __init__(self):
@@ -20,7 +19,7 @@ class LLMClient:
         self.keep_alive = os.getenv("OLLAMA_KEEP_ALIVE", "30m")
         self.temperature = float(os.getenv("OLLAMA_TEMPERATURE", "0.2"))
 
-        # Si tu Ollama soporta "think" (modelos thinking), lo apagamos
+        # apaga thinking si algún modelo lo trae
         self.think = os.getenv(
             "OLLAMA_THINK", "false").lower() in ("1", "true", "yes")
 
@@ -30,18 +29,14 @@ class LLMClient:
             "messages": messages,
             "stream": False,
             "keep_alive": self.keep_alive,
-            "think": self.think,  # false recomendado
-            "options": {
-                "temperature": self.temperature,
-            },
+            "think": self.think,
+            "options": {"temperature": self.temperature},
         }
         r = requests.post(self.chat_url, json=payload, timeout=(10, None))
         if not r.ok:
             raise RuntimeError(f"Ollama error {r.status_code}: {r.text}")
-
         data = r.json()
-        msg = data.get("message") or {}
-        return (msg.get("content") or "").strip()
+        return ((data.get("message") or {}).get("content") or "").strip()
 
     def stream(self, messages):
         payload = {
@@ -49,10 +44,8 @@ class LLMClient:
             "messages": messages,
             "stream": True,
             "keep_alive": self.keep_alive,
-            "think": self.think,  # false recomendado
-            "options": {
-                "temperature": self.temperature,
-            },
+            "think": self.think,
+            "options": {"temperature": self.temperature},
         }
 
         r = requests.post(self.chat_url, json=payload,
@@ -60,17 +53,13 @@ class LLMClient:
         if not r.ok:
             raise RuntimeError(f"Ollama error {r.status_code}: {r.text}")
 
-        # Ollama stream = NDJSON. Cada línea trae message.content y (si aplica) message.thinking.
         for line in r.iter_lines(decode_unicode=True):
             if not line:
                 continue
             obj = json.loads(line)
             msg = obj.get("message") or {}
-
-            # IGNORAMOS thinking por completo
             content = msg.get("content") or ""
             if content:
                 yield content
-
             if obj.get("done"):
                 break

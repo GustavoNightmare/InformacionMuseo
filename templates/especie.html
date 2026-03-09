@@ -3,14 +3,25 @@
 {% block content %}
 <a href="{{ url_for('especies') }}" class="text-sm text-emerald-700 hover:underline">← Volver</a>
 
+{% if not current_user.is_authenticated %}
+<div class="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+  Inicia sesión para guardar tu recorrido y desbloquear la imagen a color cuando escanees el QR.
+</div>
+{% elif not is_scanned %}
+<div class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+  Esta especie aún no está marcada como escaneada en tu recorrido. Escanéala con QR para desbloquear la imagen a color.
+</div>
+{% endif %}
+
 <div class="mt-4 grid gap-6 lg:grid-cols-5">
   <section class="lg:col-span-2 rounded-3xl overflow-hidden border border-emerald-100 bg-white shadow-sm">
     <div class="h-72 bg-slate-100">
       {% if item.imagen %}
-        <img src="{{ url_for('static', filename=item.imagen) }}" alt="{{ item.nombre_comun }}"
-             class="h-full w-full object-cover" />
+      <img src="{{ url_for('static', filename=item.imagen) }}" alt="{{ item.nombre_comun }}"
+        class="h-full w-full object-cover"
+        style="{% if not is_scanned %}filter: grayscale(100%); opacity:.70;{% endif %}" />
       {% else %}
-        <div class="h-full w-full grid place-items-center text-slate-500 text-sm">Sin imagen</div>
+      <div class="h-full w-full grid place-items-center text-slate-500 text-sm">Sin imagen</div>
       {% endif %}
     </div>
     <div class="p-4 text-xs text-slate-500">ID: <span class="font-mono">{{ item.id }}</span></div>
@@ -32,6 +43,9 @@
     <div>
       <h1 class="text-3xl font-semibold">{{ item.nombre_comun }}</h1>
       <div class="mt-1 text-slate-600 italic">{{ item.nombre_cientifico }}</div>
+      {% if item.familia %}
+      <div class="mt-1 text-sm text-slate-600">Familia: <span class="font-semibold">{{ item.familia }}</span></div>
+      {% endif %}
     </div>
 
     <p class="mt-4 text-slate-700 leading-relaxed">{{ item.descripcion }}</p>
@@ -58,7 +72,8 @@
     <div class="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
       <div class="text-sm font-semibold">Mapa</div>
       <div class="mt-2 overflow-hidden rounded-2xl border">
-        <iframe src="{{ item.map_embed_url }}" class="w-full h-64" loading="lazy" referrerpolicy="no-referrer-when-downgrade"></iframe>
+        <iframe src="{{ item.map_embed_url }}" class="w-full h-64" loading="lazy"
+          referrerpolicy="no-referrer-when-downgrade"></iframe>
       </div>
     </div>
     {% endif %}
@@ -68,7 +83,7 @@
       <div class="font-semibold">Curiosidades</div>
       <ul class="mt-2 list-disc pl-5 text-sm text-slate-700 space-y-1">
         {% for c in item.curiosidades %}
-          <li>{{ c }}</li>
+        <li>{{ c }}</li>
         {% endfor %}
       </ul>
     </div>
@@ -94,12 +109,19 @@
 
     <div id="chatMsgs" class="h-72 overflow-auto p-4 space-y-3 bg-white">
       <div class="text-sm text-slate-600">Hola 👋 Pregúntame algo de esta especie.</div>
+      {% if not current_user.is_authenticated %}
+      <div class="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-2xl p-3">
+        Para usar el chat con memoria del recorrido, inicia sesión.
+      </div>
+      {% endif %}
     </div>
 
     <form id="chatForm" class="p-3 border-t border-slate-200 bg-white flex gap-2">
-      <input id="chatInput" placeholder="Escribe tu pregunta…"
-        class="flex-1 rounded-2xl border border-slate-200 px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200"/>
-      <button class="rounded-2xl bg-emerald-600 px-4 py-2 text-white text-sm font-medium hover:bg-emerald-700">
+      <input id="chatInput" placeholder="Escribe tu pregunta…" {% if not current_user.is_authenticated %}disabled{%
+        endif %}
+        class="flex-1 rounded-2xl border border-slate-200 px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200 disabled:bg-slate-100" />
+      <button id="chatSendBtn" {% if not current_user.is_authenticated %}disabled{% endif %}
+        class="rounded-2xl bg-emerald-600 px-4 py-2 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60">
         Enviar
       </button>
     </form>
@@ -108,6 +130,8 @@
 
 <script>
   const SPECIES_ID = "{{ item.id }}";
+  const IS_AUTH = {{ "true" if current_user.is_authenticated else "false" }};
+
   const fab = document.getElementById("chatFab");
   const panel = document.getElementById("chatPanel");
   const closeBtn = document.getElementById("chatClose");
@@ -126,12 +150,13 @@
     wrap.appendChild(bubble);
     msgs.appendChild(wrap);
     msgs.scrollTop = msgs.scrollHeight;
+    return bubble;
   }
 
   function toggle(open) {
     panel.classList.toggle("hidden", !open);
     fab.classList.toggle("hidden", open);
-    if (open) setTimeout(() => input.focus(), 50);
+    if (open && input) setTimeout(() => input.focus(), 50);
   }
 
   fab.addEventListener("click", () => toggle(true));
@@ -139,71 +164,50 @@
 
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
+    if (!IS_AUTH) {
+      addMsg("assistant", "Inicia sesión para usar el chat con memoria.");
+      return;
+    }
+
     const text = input.value.trim();
     if (!text) return;
+
     input.value = "";
     addMsg("user", text);
 
-    const thinkingWrap = document.createElement("div");
-    thinkingWrap.className = "flex justify-start";
-    const thinking = document.createElement("div");
-    thinking.className = "max-w-[85%] rounded-2xl px-3 py-2 text-sm bg-slate-100 text-slate-800";
-    thinking.textContent = "Pensando…";
-    thinkingWrap.appendChild(thinking);
-    msgs.appendChild(thinkingWrap);
-    msgs.scrollTop = msgs.scrollHeight;
+    const thinkingBubble = addMsg("assistant", "Pensando…");
 
     try {
       const r = await fetch("/api/chat_stream", {
-  method: "POST",
-  headers: {"Content-Type":"application/json"},
-  body: JSON.stringify({ species_id: SPECIES_ID, message: text })
-});
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ species_id: SPECIES_ID, message: text })
+      });
 
-if (!r.ok || !r.body) {
-  msgs.removeChild(thinkingWrap);
-  addMsg("assistant", "Error: no se pudo iniciar streaming.");
-  return;
-}
-
-msgs.removeChild(thinkingWrap);
-
-// crea burbuja del asistente que se irá llenando
-const wrap = document.createElement("div");
-wrap.className = "flex justify-start";
-const bubble = document.createElement("div");
-bubble.className = "max-w-[85%] rounded-2xl px-3 py-2 text-sm bg-slate-100 text-slate-800";
-bubble.textContent = "";
-wrap.appendChild(bubble);
-msgs.appendChild(wrap);
-msgs.scrollTop = msgs.scrollHeight;
-
-const reader = r.body.getReader();
-const decoder = new TextDecoder("utf-8");
-let full = "";
-
-while (true) {
-  const { value, done } = await reader.read();
-  if (done) break;
-  full += decoder.decode(value, { stream: true });
-  bubble.textContent = full;
-  msgs.scrollTop = msgs.scrollHeight;
-}
-
-      let data = null;
-      try { data = await r.json(); }
-      catch { data = { ok:false, error:"Servidor respondió algo que no es JSON. Revisa la consola Flask." }; }
-
-      msgs.removeChild(thinkingWrap);
-
-      if (!data.ok) {
-        addMsg("assistant", "Error: " + (data.error || "desconocido"));
+      if (r.status === 401) {
+        thinkingBubble.textContent = "Debes iniciar sesión. Ve a 'Entrar' arriba.";
         return;
       }
-      addMsg("assistant", data.answer);
+
+      if (!r.ok || !r.body) {
+        thinkingBubble.textContent = "Error: no se pudo iniciar el chat.";
+        return;
+      }
+
+      // Streaming
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let full = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        full += decoder.decode(value, { stream: true });
+        thinkingBubble.textContent = full;
+        msgs.scrollTop = msgs.scrollHeight;
+      }
     } catch (err) {
-      msgs.removeChild(thinkingWrap);
-      addMsg("assistant", "Error de red / servidor.");
+      thinkingBubble.textContent = "Error de red / servidor.";
     }
   });
 </script>

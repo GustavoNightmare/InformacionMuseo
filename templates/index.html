@@ -45,16 +45,16 @@
   const out = document.getElementById("out");
   const statusEl = document.getElementById("status");
   const btnStart = document.getElementById("btnStart");
-  const btnStop  = document.getElementById("btnStop");
+  const btnStop = document.getElementById("btnStop");
   let qr = null;
   let running = false;
 
-  function setStatus(text, kind="idle") {
+  function setStatus(text, kind = "idle") {
     statusEl.textContent = text;
     statusEl.className = "text-xs px-2 py-1 rounded-full " + (
       kind === "run" ? "bg-sky-100 text-sky-700" :
-      kind === "err" ? "bg-rose-100 text-rose-700" :
-      "bg-slate-100 text-slate-600"
+        kind === "err" ? "bg-rose-100 text-rose-700" :
+          "bg-slate-100 text-slate-600"
     );
   }
 
@@ -75,9 +75,9 @@
           const id = normalizeToSpeciesId(decodedText);
           out.textContent = decodedText;
           await stop();
-          window.location.href = "/especie/" + encodeURIComponent(id);
+          window.location.href = "/scan/" + encodeURIComponent(id);
         },
-        () => {}
+        () => { }
       );
       running = true;
       btnStart.disabled = true;
