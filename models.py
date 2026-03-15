@@ -34,9 +34,8 @@ class Species(db.Model):
     nombre_comun = db.Column(db.String(200), nullable=False)
     nombre_cientifico = db.Column(db.String(200), nullable=True)
 
-    # NUEVO: para comparar especies del recorrido
-    familia = db.Column(db.String(120), nullable=True)  # ej: Cathartidae
-    orden = db.Column(db.String(120), nullable=True)    # ej: Cathartiformes
+    familia = db.Column(db.String(120), nullable=True)
+    orden = db.Column(db.String(120), nullable=True)
 
     descripcion = db.Column(db.Text, nullable=True)
     habitat = db.Column(db.Text, nullable=True)
@@ -51,8 +50,11 @@ class Species(db.Model):
     museo_info = db.Column(db.Text, nullable=True)
 
     curiosidades_json = db.Column(db.Text, nullable=True)
+
+    # Ajuste visual SOLO para la miniatura/listado
     thumb_pos_x = db.Column(db.Integer, nullable=False, default=50)
     thumb_pos_y = db.Column(db.Integer, nullable=False, default=50)
+    thumb_zoom = db.Column(db.Integer, nullable=False, default=100)
 
     @property
     def curiosidades(self):

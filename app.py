@@ -78,6 +78,14 @@ def clamp_percent(raw, default=50):
     return max(0, min(100, value))
 
 
+def clamp_zoom(raw, default=100):
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return default
+    return max(80, min(200, value))
+
+
 def ensure_schema_updates():
     rows = db.session.execute(text("PRAGMA table_info(species)")).fetchall()
     cols = {row[1] for row in rows}
@@ -93,6 +101,12 @@ def ensure_schema_updates():
     if "thumb_pos_y" not in cols:
         db.session.execute(
             text("ALTER TABLE species ADD COLUMN thumb_pos_y INTEGER DEFAULT 50")
+        )
+        changed = True
+
+    if "thumb_zoom" not in cols:
+        db.session.execute(
+            text("ALTER TABLE species ADD COLUMN thumb_zoom INTEGER DEFAULT 100")
         )
         changed = True
 
@@ -142,7 +156,9 @@ login_manager.login_view = "login"
 login_manager.init_app(app)
 
 llm = LLMClient()
-
+with app.app_context():
+    db.create_all()
+    ensure_schema_updates()
 # Lazy init VectorStore (evita ruido en CLI)
 _VS = None
 
@@ -743,18 +759,19 @@ def admin_species_new_post():
         nombre_comun=nombre_comun,
         nombre_cientifico=(request.form.get(
             "nombre_cientifico") or "").strip(),
-
-        # NUEVO
         familia=(request.form.get("familia") or "").strip(),
         orden=(request.form.get("orden") or "").strip(),
-
         descripcion=(request.form.get("descripcion") or "").strip(),
         habitat=(request.form.get("habitat") or "").strip(),
         dieta=(request.form.get("dieta") or "").strip(),
         zonas=(request.form.get("zonas") or "").strip(),
         map_embed_url=(request.form.get("map_embed_url") or "").strip(),
         museo_info=(request.form.get("museo_info") or "").strip(),
+        thumb_pos_x=clamp_percent(request.form.get("thumb_pos_x"), 50),
+        thumb_pos_y=clamp_percent(request.form.get("thumb_pos_y"), 50),
+        thumb_zoom=clamp_zoom(request.form.get("thumb_zoom"), 100),
     )
+
     curiosidades_raw = (request.form.get("curiosidades") or "").strip()
     sp.curiosidades = [x.strip()
                        for x in curiosidades_raw.split("\n") if x.strip()]
@@ -816,6 +833,10 @@ def admin_species_edit_post(species_id):
     item.zonas = (request.form.get("zonas") or "").strip()
     item.map_embed_url = (request.form.get("map_embed_url") or "").strip()
     item.museo_info = (request.form.get("museo_info") or "").strip()
+
+    item.thumb_pos_x = clamp_percent(request.form.get("thumb_pos_x"), 50)
+    item.thumb_pos_y = clamp_percent(request.form.get("thumb_pos_y"), 50)
+    item.thumb_zoom = clamp_zoom(request.form.get("thumb_zoom"), 100)
 
     curiosidades_raw = (request.form.get("curiosidades") or "").strip()
     item.curiosidades = [x.strip()
@@ -983,6 +1004,7 @@ def create_admin():
 
     with app.app_context():
         db.create_all()
+        ensure_schema_updates()
         if User.query.filter_by(username=username).first():
             print("⚠️ Admin ya existe")
             return
@@ -1004,6 +1026,7 @@ def create_user():
 
     with app.app_context():
         db.create_all()
+        ensure_schema_updates()
         if User.query.filter_by(username=username).first():
             print("⚠️ Usuario ya existe")
             return
@@ -1019,6 +1042,7 @@ def create_user():
 def seed():
     with app.app_context():
         db.create_all()
+        ensure_schema_updates()
         if db.session.get(Species, "condor-001"):
             print("⚠️ Seed ya aplicado")
             return
