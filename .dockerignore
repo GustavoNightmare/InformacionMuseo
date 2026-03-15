@@ -1,0 +1,11 @@
+.venv
+.git
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.env
+instance
+chroma_db
+ollama
+static/uploads

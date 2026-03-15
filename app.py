@@ -1,18 +1,23 @@
-import os
-import re
-import uuid
-import urllib.parse
-import requests
-from flask import Flask, render_template, redirect, url_for, request, abort, jsonify, flash, Response, stream_with_context
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
-from werkzeug.utils import secure_filename
-from models import db, User, Species, MuseumDoc, Visit, ChatTurn
-from PyPDF2 import PdfReader
-import docx
-
-from models import db, User, Species, MuseumDoc, Visit
-from llm import LLMClient
 from rag import build_structured_context
+from llm import LLMClient
+from models import db, User, Species, MuseumDoc, Visit
+import docx
+from PyPDF2 import PdfReader
+from sqlalchemy import or_
+from models import db, User, Species, MuseumDoc, Visit, ChatTurn
+
+from werkzeug.utils import secure_filename
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from flask import Flask, render_template, redirect, url_for, request, abort, jsonify, flash, Response, stream_with_context
+import requests
+import urllib.parse
+import uuid
+import re
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 ID_RE = re.compile(r"^[a-z0-9-_]+$")
 
@@ -571,8 +576,56 @@ def especie(species_id):
 @login_required
 def admin_species_list():
     admin_required()
-    items = Species.query.order_by(Species.nombre_comun.asc()).all()
-    return render_template("admin_species_list.html", items=items)
+
+    q = (request.args.get("q") or "").strip()
+    familia = (request.args.get("familia") or "").strip()
+    orden = (request.args.get("orden") or "").strip()
+
+    query = Species.query
+
+    if q:
+        term = f"%{q}%"
+        query = query.filter(or_(
+            Species.id.ilike(term),
+            Species.nombre_comun.ilike(term),
+            Species.nombre_cientifico.ilike(term),
+            Species.familia.ilike(term),
+            Species.orden.ilike(term),
+        ))
+
+    if familia:
+        query = query.filter(Species.familia == familia)
+
+    if orden:
+        query = query.filter(Species.orden == orden)
+
+    items = query.order_by(Species.nombre_comun.asc()).all()
+
+    familias = [
+        value for (value,) in db.session.query(Species.familia)
+        .filter(Species.familia.isnot(None), Species.familia != "")
+        .distinct()
+        .order_by(Species.familia.asc())
+        .all()
+    ]
+
+    ordenes = [
+        value for (value,) in db.session.query(Species.orden)
+        .filter(Species.orden.isnot(None), Species.orden != "")
+        .distinct()
+        .order_by(Species.orden.asc())
+        .all()
+    ]
+
+    return render_template(
+        "admin_species_list.html",
+        items=items,
+        q=q,
+        familia=familia,
+        orden=orden,
+        familias=familias,
+        ordenes=ordenes,
+    )
 
 
 @app.get("/admin/especies/nueva")
@@ -961,4 +1014,4 @@ def seed():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5002, debug=True)
