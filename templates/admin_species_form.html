@@ -3,7 +3,9 @@
 {% block content %}
 <div class="max-w-3xl rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm">
   <h1 class="text-2xl font-semibold">{% if item %}Editar{% else %}Nueva{% endif %} especie</h1>
-
+  {% set current_thumb_x = item.thumb_pos_x if item and item.thumb_pos_x is not none else 50 %}
+  {% set current_thumb_y = item.thumb_pos_y if item and item.thumb_pos_y is not none else 50 %}
+  {% set current_preview_src = url_for('static', filename=item.imagen) if item and item.imagen else '' %}
   <form class="mt-4 space-y-3" method="post" enctype="multipart/form-data"
     action="{% if item %}{{ url_for('admin_species_edit_post', species_id=item.id) }}{% else %}{{ url_for('admin_species_new_post') }}{% endif %}">
 
@@ -40,14 +42,66 @@
     </div>
 
     <div>
-      <div class="text-xs text-slate-500 mb-1">Audio MP3 (subir)</div>
-      <input type="file" name="audio_file" accept=".mp3"
+      <div class="text-xs text-slate-500 mb-1">Imagen (subir)</div>
+      <input id="imagen_file" type="file" name="imagen_file" accept=".jpg,.jpeg,.png,.webp"
         class="w-full rounded-2xl border border-slate-200 bg-white px-4 py-2 text-sm" />
-      {% if item and item.audio %}
-      <div class="text-xs text-slate-500 mt-1">Actual: <span class="font-mono">{{ item.audio }}</span></div>
+      {% if item and item.imagen %}
+      <div class="text-xs text-slate-500 mt-1">
+        Actual: <span class="font-mono">{{ item.imagen }}</span>
+      </div>
       {% endif %}
-    </div>
 
+      <div class="mt-4 grid gap-4 md:grid-cols-2">
+        <div>
+          <label for="thumb_pos_x" class="block text-xs text-slate-500 mb-1">
+            Encaje horizontal de la miniatura
+          </label>
+          <input id="thumb_pos_x" type="range" name="thumb_pos_x" min="0" max="100" value="{{ current_thumb_x }}"
+            class="w-full" />
+          <div class="text-xs text-slate-500 mt-1">
+            Valor: <span id="thumb_pos_x_val">{{ current_thumb_x }}</span>%
+          </div>
+        </div>
+
+        <div>
+          <label for="thumb_pos_y" class="block text-xs text-slate-500 mb-1">
+            Encaje vertical de la miniatura
+          </label>
+          <input id="thumb_pos_y" type="range" name="thumb_pos_y" min="0" max="100" value="{{ current_thumb_y }}"
+            class="w-full" />
+          <div class="text-xs text-slate-500 mt-1">
+            Valor: <span id="thumb_pos_y_val">{{ current_thumb_y }}</span>%
+          </div>
+        </div>
+      </div>
+
+      <div class="mt-4">
+        <div class="text-xs text-slate-500 mb-2">Vista previa de cómo se verá en la lista</div>
+
+        <div class="max-w-sm rounded-3xl border border-emerald-100 bg-white shadow-sm overflow-hidden">
+          <div class="relative h-40 bg-slate-100 overflow-hidden">
+            <img id="thumbPreview" src="{{ current_preview_src }}" alt="Vista previa miniatura"
+              class="h-full w-full object-cover {% if not current_preview_src %}hidden{% endif %}"
+              style="object-position: {{ current_thumb_x }}% {{ current_thumb_y }}%;" />
+            <div id="thumbPreviewEmpty"
+              class="h-full w-full grid place-items-center text-slate-500 text-sm {% if current_preview_src %}hidden{% endif %}">
+              Selecciona una imagen para previsualizar
+            </div>
+
+            <div class="absolute top-2 left-2 text-xs px-2 py-1 rounded-full bg-slate-900/70 text-white">
+              Vista miniatura
+            </div>
+          </div>
+
+          <div class="p-4">
+            <div class="text-xs text-slate-500">{{ item.id if item else 'preview-001' }}</div>
+            <div class="mt-1 font-semibold">{{ item.nombre_comun if item else 'Nombre de ejemplo' }}</div>
+            <div class="text-sm italic text-slate-600">{{ item.nombre_cientifico if item else 'Nombre científico' }}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
     <input name="zonas" value="{{ item.zonas if item else '' }}"
       placeholder="Zonas donde se encuentra (ej: Cauca, Nariño, Andes...)"
       class="w-full rounded-2xl border border-slate-200 px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" />
@@ -136,4 +190,47 @@
   </form>
   {% endif %}
 </div>
+<script>
+  (function () {
+    const fileInput = document.getElementById("imagen_file");
+    const xInput = document.getElementById("thumb_pos_x");
+    const yInput = document.getElementById("thumb_pos_y");
+    const xVal = document.getElementById("thumb_pos_x_val");
+    const yVal = document.getElementById("thumb_pos_y_val");
+    const preview = document.getElementById("thumbPreview");
+    const empty = document.getElementById("thumbPreviewEmpty");
+
+    if (!xInput || !yInput || !preview) return;
+
+    function renderPreview() {
+      const x = xInput.value || 50;
+      const y = yInput.value || 50;
+
+      xVal.textContent = x;
+      yVal.textContent = y;
+      preview.style.objectPosition = `${x}% ${y}%`;
+    }
+
+    renderPreview();
+
+    xInput.addEventListener("input", renderPreview);
+    yInput.addEventListener("input", renderPreview);
+
+    if (fileInput) {
+      fileInput.addEventListener("change", function () {
+        const file = this.files && this.files[0];
+        if (!file) return;
+
+        const reader = new FileReader();
+        reader.onload = function (e) {
+          preview.src = e.target.result;
+          preview.classList.remove("hidden");
+          if (empty) empty.classList.add("hidden");
+          renderPreview();
+        };
+        reader.readAsDataURL(file);
+      });
+    }
+  })();
+</script>
 {% endblock %}

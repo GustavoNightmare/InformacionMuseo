@@ -3,7 +3,7 @@ from llm import LLMClient
 from models import db, User, Species, MuseumDoc, Visit
 import docx
 from PyPDF2 import PdfReader
-from sqlalchemy import or_
+from sqlalchemy import or_, text
 from models import db, User, Species, MuseumDoc, Visit, ChatTurn
 
 from werkzeug.utils import secure_filename
@@ -68,6 +68,36 @@ def unique_name(prefix: str, filename: str) -> str:
     return f"{prefix}_{uuid.uuid4().hex}_{safe}"
 
 # --------- TEXT EXTRACTION ---------
+
+
+def clamp_percent(raw, default=50):
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(100, value))
+
+
+def ensure_schema_updates():
+    rows = db.session.execute(text("PRAGMA table_info(species)")).fetchall()
+    cols = {row[1] for row in rows}
+
+    changed = False
+
+    if "thumb_pos_x" not in cols:
+        db.session.execute(
+            text("ALTER TABLE species ADD COLUMN thumb_pos_x INTEGER DEFAULT 50")
+        )
+        changed = True
+
+    if "thumb_pos_y" not in cols:
+        db.session.execute(
+            text("ALTER TABLE species ADD COLUMN thumb_pos_y INTEGER DEFAULT 50")
+        )
+        changed = True
+
+    if changed:
+        db.session.commit()
 
 
 def extract_text_from_pdf(filepath: str) -> str:
@@ -942,6 +972,7 @@ def forbidden(e):
 def init_db():
     with app.app_context():
         db.create_all()
+        ensure_schema_updates()
     print("✅ DB inicializada")
 
 

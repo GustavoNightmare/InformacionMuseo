@@ -51,6 +51,8 @@ class Species(db.Model):
     museo_info = db.Column(db.Text, nullable=True)
 
     curiosidades_json = db.Column(db.Text, nullable=True)
+    thumb_pos_x = db.Column(db.Integer, nullable=False, default=50)
+    thumb_pos_y = db.Column(db.Integer, nullable=False, default=50)
 
     @property
     def curiosidades(self):

@@ -43,9 +43,12 @@
 
     <div class="relative h-40 bg-slate-100 overflow-hidden">
       {% if item.imagen %}
+      {% set thumb_x = item.thumb_pos_x if item.thumb_pos_x is not none else 50 %}
+      {% set thumb_y = item.thumb_pos_y if item.thumb_pos_y is not none else 50 %}
+
       <img src="{{ url_for('static', filename=item.imagen) }}" alt="{{ item.nombre_comun }}"
         class="h-full w-full object-cover group-hover:scale-[1.02] transition"
-        style="{% if not scanned %}filter: grayscale(100%); opacity:.70;{% endif %}" />
+        style="object-position: {{ thumb_x }}% {{ thumb_y }}%;{% if not scanned %} filter: grayscale(100%); opacity:.70;{% endif %}" />
       {% else %}
       <div class="h-full w-full grid place-items-center text-slate-500 text-sm">Sin imagen</div>
       {% endif %}
