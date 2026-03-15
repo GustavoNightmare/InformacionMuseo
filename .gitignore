@@ -3,3 +3,24 @@ __pycache__
 instance/
 chroma_db
 static/uploads/
+
+# Ollama keys
+ollama/id_ed25519
+ollama/id_ed25519.pub
+
+# Ollama models
+ollama/models/
+ollama/.ollama/
+
+# Python
+.venv/
+__pycache__/
+*.pyc
+
+# Local data
+instance/
+chroma_db/
+static/uploads/
+
+# Env
+.env
