@@ -1,0 +1,47 @@
+services:
+  museo-app:
+    build: .
+    container_name: museo-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DATABASE_URL: sqlite:////app/instance/bioscan.db
+      CHROMA_PATH: /app/chroma_db
+      OLLAMA_BASE_URL: http://ollama:11434
+      OLLAMA_CHAT_URL: http://ollama:11434/api/chat
+      OLLAMA_EMBED_URL: http://ollama:11434/api/embed
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./instance:/app/instance
+      - ./chroma_db:/app/chroma_db
+      - ./static/uploads:/app/static/uploads
+    depends_on:
+      - ollama
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    environment:
+      OLLAMA_CHAT_MODEL: ${OLLAMA_CHAT_MODEL:-qwen3.5:4b}
+      OLLAMA_EMBED_MODEL: ${OLLAMA_EMBED_MODEL:-nomic-embed-text}
+    volumes:
+      - ./ollama:/root/.ollama
+      - ./docker/ollama-init.sh:/ollama-init.sh:ro
+    entrypoint: [ "/bin/sh", "/ollama-init.sh" ]
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: ngrok
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
+    command: [ "http", "http://museo-app:5000" ]
+    ports:
+      - "4040:4040"
+    depends_on:
+      - museo-app

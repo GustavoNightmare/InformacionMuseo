@@ -1,18 +1,23 @@
-import os
-import re
-import uuid
-import urllib.parse
-import requests
-from flask import Flask, render_template, redirect, url_for, request, abort, jsonify, flash, Response, stream_with_context
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
-from werkzeug.utils import secure_filename
-from models import db, User, Species, MuseumDoc, Visit, ChatTurn
-from PyPDF2 import PdfReader
-import docx
-
-from models import db, User, Species, MuseumDoc, Visit
-from llm import LLMClient
 from rag import build_structured_context
+from llm import LLMClient
+from models import db, User, Species, MuseumDoc, Visit
+import docx
+from PyPDF2 import PdfReader
+from sqlalchemy import or_, text
+from models import db, User, Species, MuseumDoc, Visit, ChatTurn
+
+from werkzeug.utils import secure_filename
+from flask_login import LoginManager, login_user, logout_user, login_required, current_user
+from flask import Flask, render_template, redirect, url_for, request, abort, jsonify, flash, Response, stream_with_context
+import requests
+import urllib.parse
+import uuid
+import re
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
+
 
 ID_RE = re.compile(r"^[a-z0-9-_]+$")
 
@@ -65,6 +70,50 @@ def unique_name(prefix: str, filename: str) -> str:
 # --------- TEXT EXTRACTION ---------
 
 
+def clamp_percent(raw, default=50):
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return default
+    return max(0, min(100, value))
+
+
+def clamp_zoom(raw, default=100):
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return default
+    return max(80, min(200, value))
+
+
+def ensure_schema_updates():
+    rows = db.session.execute(text("PRAGMA table_info(species)")).fetchall()
+    cols = {row[1] for row in rows}
+
+    changed = False
+
+    if "thumb_pos_x" not in cols:
+        db.session.execute(
+            text("ALTER TABLE species ADD COLUMN thumb_pos_x INTEGER DEFAULT 50")
+        )
+        changed = True
+
+    if "thumb_pos_y" not in cols:
+        db.session.execute(
+            text("ALTER TABLE species ADD COLUMN thumb_pos_y INTEGER DEFAULT 50")
+        )
+        changed = True
+
+    if "thumb_zoom" not in cols:
+        db.session.execute(
+            text("ALTER TABLE species ADD COLUMN thumb_zoom INTEGER DEFAULT 100")
+        )
+        changed = True
+
+    if changed:
+        db.session.commit()
+
+
 def extract_text_from_pdf(filepath: str) -> str:
     try:
         reader = PdfReader(filepath)
@@ -107,7 +156,9 @@ login_manager.login_view = "login"
 login_manager.init_app(app)
 
 llm = LLMClient()
-
+with app.app_context():
+    db.create_all()
+    ensure_schema_updates()
 # Lazy init VectorStore (evita ruido en CLI)
 _VS = None
 
@@ -571,8 +622,56 @@ def especie(species_id):
 @login_required
 def admin_species_list():
     admin_required()
-    items = Species.query.order_by(Species.nombre_comun.asc()).all()
-    return render_template("admin_species_list.html", items=items)
+
+    q = (request.args.get("q") or "").strip()
+    familia = (request.args.get("familia") or "").strip()
+    orden = (request.args.get("orden") or "").strip()
+
+    query = Species.query
+
+    if q:
+        term = f"%{q}%"
+        query = query.filter(or_(
+            Species.id.ilike(term),
+            Species.nombre_comun.ilike(term),
+            Species.nombre_cientifico.ilike(term),
+            Species.familia.ilike(term),
+            Species.orden.ilike(term),
+        ))
+
+    if familia:
+        query = query.filter(Species.familia == familia)
+
+    if orden:
+        query = query.filter(Species.orden == orden)
+
+    items = query.order_by(Species.nombre_comun.asc()).all()
+
+    familias = [
+        value for (value,) in db.session.query(Species.familia)
+        .filter(Species.familia.isnot(None), Species.familia != "")
+        .distinct()
+        .order_by(Species.familia.asc())
+        .all()
+    ]
+
+    ordenes = [
+        value for (value,) in db.session.query(Species.orden)
+        .filter(Species.orden.isnot(None), Species.orden != "")
+        .distinct()
+        .order_by(Species.orden.asc())
+        .all()
+    ]
+
+    return render_template(
+        "admin_species_list.html",
+        items=items,
+        q=q,
+        familia=familia,
+        orden=orden,
+        familias=familias,
+        ordenes=ordenes,
+    )
 
 
 @app.get("/admin/especies/nueva")
@@ -660,18 +759,19 @@ def admin_species_new_post():
         nombre_comun=nombre_comun,
         nombre_cientifico=(request.form.get(
             "nombre_cientifico") or "").strip(),
-
-        # NUEVO
         familia=(request.form.get("familia") or "").strip(),
         orden=(request.form.get("orden") or "").strip(),
-
         descripcion=(request.form.get("descripcion") or "").strip(),
         habitat=(request.form.get("habitat") or "").strip(),
         dieta=(request.form.get("dieta") or "").strip(),
         zonas=(request.form.get("zonas") or "").strip(),
         map_embed_url=(request.form.get("map_embed_url") or "").strip(),
         museo_info=(request.form.get("museo_info") or "").strip(),
+        thumb_pos_x=clamp_percent(request.form.get("thumb_pos_x"), 50),
+        thumb_pos_y=clamp_percent(request.form.get("thumb_pos_y"), 50),
+        thumb_zoom=clamp_zoom(request.form.get("thumb_zoom"), 100),
     )
+
     curiosidades_raw = (request.form.get("curiosidades") or "").strip()
     sp.curiosidades = [x.strip()
                        for x in curiosidades_raw.split("\n") if x.strip()]
@@ -733,6 +833,10 @@ def admin_species_edit_post(species_id):
     item.zonas = (request.form.get("zonas") or "").strip()
     item.map_embed_url = (request.form.get("map_embed_url") or "").strip()
     item.museo_info = (request.form.get("museo_info") or "").strip()
+
+    item.thumb_pos_x = clamp_percent(request.form.get("thumb_pos_x"), 50)
+    item.thumb_pos_y = clamp_percent(request.form.get("thumb_pos_y"), 50)
+    item.thumb_zoom = clamp_zoom(request.form.get("thumb_zoom"), 100)
 
     curiosidades_raw = (request.form.get("curiosidades") or "").strip()
     item.curiosidades = [x.strip()
@@ -889,6 +993,7 @@ def forbidden(e):
 def init_db():
     with app.app_context():
         db.create_all()
+        ensure_schema_updates()
     print("✅ DB inicializada")
 
 
@@ -899,6 +1004,7 @@ def create_admin():
 
     with app.app_context():
         db.create_all()
+        ensure_schema_updates()
         if User.query.filter_by(username=username).first():
             print("⚠️ Admin ya existe")
             return
@@ -920,6 +1026,7 @@ def create_user():
 
     with app.app_context():
         db.create_all()
+        ensure_schema_updates()
         if User.query.filter_by(username=username).first():
             print("⚠️ Usuario ya existe")
             return
@@ -935,6 +1042,7 @@ def create_user():
 def seed():
     with app.app_context():
         db.create_all()
+        ensure_schema_updates()
         if db.session.get(Species, "condor-001"):
             print("⚠️ Seed ya aplicado")
             return
@@ -961,4 +1069,4 @@ def seed():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5002, debug=True)

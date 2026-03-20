@@ -43,15 +43,19 @@
 
     <div class="relative h-40 bg-slate-100 overflow-hidden">
       {% if item.imagen %}
+      {% set thumb_x = item.thumb_pos_x if item.thumb_pos_x is not none else 50 %}
+      {% set thumb_y = item.thumb_pos_y if item.thumb_pos_y is not none else 50 %}
+      {% set thumb_zoom = item.thumb_zoom if item.thumb_zoom is not none else 100 %}
+
       <img src="{{ url_for('static', filename=item.imagen) }}" alt="{{ item.nombre_comun }}"
-        class="h-full w-full object-cover group-hover:scale-[1.02] transition"
-        style="{% if not scanned %}filter: grayscale(100%); opacity:.70;{% endif %}" />
+        class="h-full w-full object-cover transition"
+        style="object-position: {{ thumb_x }}% {{ thumb_y }}%; transform-origin: {{ thumb_x }}% {{ thumb_y }}%; transform: scale({{ thumb_zoom / 100 }});{% if not scanned %} filter: grayscale(100%); opacity:.70;{% endif %}" />
       {% else %}
       <div class="h-full w-full grid place-items-center text-slate-500 text-sm">Sin imagen</div>
       {% endif %}
 
-      <div class="absolute top-2 left-2 text-xs px-2 py-1 rounded-full
-             {% if scanned %} bg-emerald-600 text-white {% else %} bg-slate-900/70 text-white {% endif %}">
+      <div
+        class="absolute top-2 left-2 text-xs px-2 py-1 rounded-full {% if scanned %} bg-emerald-600 text-white {% else %} bg-slate-900/70 text-white {% endif %}">
         {% if scanned %}Escaneada{% else %}Sin escanear{% endif %}
       </div>
 
