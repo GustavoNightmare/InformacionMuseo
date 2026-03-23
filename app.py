@@ -1,10 +1,22 @@
 from rag import build_structured_context
 from llm import LLMClient
-from models import db, User, Species, MuseumDoc, Visit
+from models import db, User, Species, MuseumDoc, Visit, ChatTurn, QRStyle
 import docx
 from PyPDF2 import PdfReader
 from sqlalchemy import or_, text
-from models import db, User, Species, MuseumDoc, Visit, ChatTurn
+from io import BytesIO
+from PIL import Image, ImageColor, ImageDraw, ImageFont
+import qrcode
+from qrcode.image.styledpil import StyledPilImage
+from qrcode.image.styles.colormasks import SolidFillColorMask
+try:
+    from qrcode.image.styles.moduledrawers.pil import (
+        SquareModuleDrawer, RoundedModuleDrawer, CircleModuleDrawer, GappedSquareModuleDrawer,
+    )
+except ImportError:
+    from qrcode.image.styles.moduledrawers import (
+        SquareModuleDrawer, RoundedModuleDrawer, CircleModuleDrawer, GappedSquareModuleDrawer,
+    )
 
 from werkzeug.utils import secure_filename
 from flask_login import LoginManager, login_user, logout_user, login_required, current_user
@@ -66,6 +78,241 @@ def ensure_dir(path: str):
 def unique_name(prefix: str, filename: str) -> str:
     safe = secure_filename(filename)
     return f"{prefix}_{uuid.uuid4().hex}_{safe}"
+
+QR_FRAME_OPTIONS = {
+    "simple": "Simple",
+    "card": "Tarjeta",
+    "badge": "Insignia",
+    "scanme": "Scan me",
+}
+
+QR_MODULE_OPTIONS = {
+    "square": "Cuadrado",
+    "rounded": "Redondeado",
+    "circle": "Circular",
+    "gapped": "Separado",
+}
+
+
+def clamp_int(raw, min_value: int, max_value: int, default: int) -> int:
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return default
+    return max(min_value, min(max_value, value))
+
+
+def normalize_hex_color(raw: str | None, default: str) -> str:
+    value = (raw or "").strip()
+    if re.fullmatch(r"#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})", value):
+        return value
+    return default
+
+
+def get_qr_defaults(species: Species) -> dict:
+    return {
+        "frame_style": "simple",
+        "module_style": "square",
+        "fill_color": "#111827",
+        "back_color": "#ffffff",
+        "accent_color": "#059669",
+        "label_text": "",
+        "top_text": "BioScan",
+        "box_size": 10,
+        "border": 4,
+    }
+
+
+def get_qr_style_dict(species: Species, style_obj: QRStyle | None = None, overrides=None) -> dict:
+    data = get_qr_defaults(species)
+    if style_obj:
+        data.update({
+            "frame_style": style_obj.frame_style or data["frame_style"],
+            "module_style": style_obj.module_style or data["module_style"],
+            "fill_color": style_obj.fill_color or data["fill_color"],
+            "back_color": style_obj.back_color or data["back_color"],
+            "accent_color": style_obj.accent_color or data["accent_color"],
+            "label_text": style_obj.label_text or "",
+            "top_text": style_obj.top_text or data["top_text"],
+            "box_size": style_obj.box_size or data["box_size"],
+            "border": style_obj.border or data["border"],
+        })
+
+    source = overrides or {}
+    if hasattr(source, "get"):
+        frame_style = (source.get("frame_style") or data["frame_style"]).strip()
+        module_style = (source.get("module_style") or data["module_style"]).strip()
+        data["frame_style"] = frame_style if frame_style in QR_FRAME_OPTIONS else data["frame_style"]
+        data["module_style"] = module_style if module_style in QR_MODULE_OPTIONS else data["module_style"]
+        data["fill_color"] = normalize_hex_color(source.get("fill_color"), data["fill_color"])
+        data["back_color"] = normalize_hex_color(source.get("back_color"), data["back_color"])
+        data["accent_color"] = normalize_hex_color(source.get("accent_color"), data["accent_color"])
+        data["label_text"] = (source.get("label_text") if source.get("label_text") is not None else data["label_text"])[:160].strip()
+        data["top_text"] = ((source.get("top_text") if source.get("top_text") is not None else data["top_text"]) or "BioScan")[:80].strip()
+        data["box_size"] = clamp_int(source.get("box_size"), 6, 18, data["box_size"])
+        data["border"] = clamp_int(source.get("border"), 2, 10, data["border"])
+
+    return data
+
+
+def get_species_admin_filters():
+    q = (request.args.get("q") or "").strip()
+    familia = (request.args.get("familia") or "").strip()
+    orden = (request.args.get("orden") or "").strip()
+
+    query = Species.query
+    if q:
+        term = f"%{q}%"
+        query = query.filter(or_(
+            Species.id.ilike(term),
+            Species.nombre_comun.ilike(term),
+            Species.nombre_cientifico.ilike(term),
+            Species.familia.ilike(term),
+            Species.orden.ilike(term),
+        ))
+
+    if familia:
+        query = query.filter(Species.familia == familia)
+    if orden:
+        query = query.filter(Species.orden == orden)
+
+    items = query.order_by(Species.nombre_comun.asc()).all()
+
+    familias = [
+        value for (value,) in db.session.query(Species.familia)
+        .filter(Species.familia.isnot(None), Species.familia != "")
+        .distinct()
+        .order_by(Species.familia.asc())
+        .all()
+    ]
+
+    ordenes = [
+        value for (value,) in db.session.query(Species.orden)
+        .filter(Species.orden.isnot(None), Species.orden != "")
+        .distinct()
+        .order_by(Species.orden.asc())
+        .all()
+    ]
+
+    return {
+        "q": q,
+        "familia": familia,
+        "orden": orden,
+        "items": items,
+        "familias": familias,
+        "ordenes": ordenes,
+    }
+
+
+def get_species_or_404(species_id: str) -> Species:
+    sid = sanitize_id(species_id)
+    if not sid or not ID_RE.match(sid):
+        abort(404)
+    item = db.session.get(Species, sid)
+    if not item:
+        abort(404)
+    return item
+
+
+def get_module_drawer(style_name: str):
+    return {
+        "square": SquareModuleDrawer(),
+        "rounded": RoundedModuleDrawer(radius_ratio=0.9),
+        "circle": CircleModuleDrawer(),
+        "gapped": GappedSquareModuleDrawer(size_ratio=0.8),
+    }.get(style_name, SquareModuleDrawer())
+
+
+def fit_text(draw, text, font, max_width: int) -> str:
+    text = (text or "").strip()
+    if not text:
+        return ""
+    if draw.textlength(text, font=font) <= max_width:
+        return text
+    while len(text) > 3 and draw.textlength(text + "…", font=font) > max_width:
+        text = text[:-1]
+    return text + "…"
+
+
+def render_qr_image(species: Species, style_data: dict) -> Image.Image:
+    qr = qrcode.QRCode(
+        error_correction=qrcode.constants.ERROR_CORRECT_H,
+        box_size=style_data["box_size"],
+        border=style_data["border"],
+    )
+    qr.add_data(species.id)
+    qr.make(fit=True)
+
+    fill_rgb = ImageColor.getrgb(style_data["fill_color"])
+    back_rgb = ImageColor.getrgb(style_data["back_color"])
+    accent_rgb = ImageColor.getrgb(style_data["accent_color"])
+
+    qr_img = qr.make_image(
+        image_factory=StyledPilImage,
+        module_drawer=get_module_drawer(style_data["module_style"]),
+        color_mask=SolidFillColorMask(front_color=fill_rgb, back_color=back_rgb),
+    ).convert("RGBA")
+
+    if style_data["frame_style"] == "simple" and not style_data["label_text"]:
+        return qr_img
+
+    font_title = ImageFont.load_default()
+    font_body = ImageFont.load_default()
+
+    qr_w, qr_h = qr_img.size
+    label_text = style_data["label_text"].strip()
+    top_text = style_data["top_text"].strip() or "BioScan"
+
+    header_h = 0
+    footer_h = 0
+    padding = 26
+
+    if style_data["frame_style"] in {"badge", "scanme"}:
+        header_h = 42
+    if style_data["frame_style"] == "card":
+        footer_h = 64 if label_text else 38
+    elif style_data["frame_style"] == "badge":
+        footer_h = 58 if label_text else 32
+    elif style_data["frame_style"] == "scanme":
+        footer_h = 78 if label_text else 54
+    else:
+        footer_h = 34 if label_text else 18
+
+    canvas_w = qr_w + padding * 2
+    canvas_h = qr_h + padding * 2 + header_h + footer_h
+
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), back_rgb + ((255,) if len(back_rgb) == 3 else tuple()))
+    draw = ImageDraw.Draw(canvas)
+
+    if style_data["frame_style"] == "card":
+        draw.rounded_rectangle((6, 6, canvas_w - 6, canvas_h - 6), radius=32, fill=back_rgb, outline=accent_rgb, width=8)
+    elif style_data["frame_style"] == "badge":
+        draw.rounded_rectangle((6, 6, canvas_w - 6, canvas_h - 6), radius=34, fill=back_rgb, outline=accent_rgb, width=6)
+        draw.rounded_rectangle((18, 18, canvas_w - 18, 18 + header_h), radius=18, fill=accent_rgb)
+    elif style_data["frame_style"] == "scanme":
+        draw.rounded_rectangle((8, 8, canvas_w - 8, canvas_h - 8), radius=36, fill=back_rgb, outline=accent_rgb, width=8)
+        footer_button_h = 34
+        draw.rounded_rectangle((24, canvas_h - footer_button_h - 18, canvas_w - 24, canvas_h - 18), radius=16, fill=accent_rgb)
+    else:
+        draw.rounded_rectangle((10, 10, canvas_w - 10, canvas_h - 10), radius=28, fill=back_rgb, outline=accent_rgb, width=5)
+
+    qr_x = (canvas_w - qr_w) // 2
+    qr_y = padding + header_h
+    canvas.alpha_composite(qr_img, (qr_x, qr_y))
+
+    if header_h:
+        header_text = fit_text(draw, top_text, font_title, canvas_w - 60)
+        draw.text((canvas_w // 2, 18 + header_h // 2), header_text, anchor="mm", fill=back_rgb, font=font_title)
+
+    if label_text:
+        label_text = fit_text(draw, label_text, font_body, canvas_w - 40)
+        label_y = qr_y + qr_h + 18
+        draw.text((canvas_w // 2, label_y), label_text, anchor="ma", fill=fill_rgb, font=font_body)
+
+    if style_data["frame_style"] == "scanme":
+        draw.text((canvas_w // 2, canvas_h - 35), "ESCANEA", anchor="mm", fill=back_rgb, font=font_title)
+
+    return canvas
 
 # --------- TEXT EXTRACTION ---------
 
@@ -923,6 +1170,123 @@ def admin_reindex(species_id):
     except Exception as e:
         flash(f"Falló reindex: {e}", "error")
     return redirect(url_for("admin_species_edit", species_id=sid))
+
+@app.get("/admin/qr")
+@login_required
+def admin_qr_list():
+    admin_required()
+    ctx = get_species_admin_filters()
+    styled_ids = {sid for (sid,) in db.session.query(QRStyle.species_id).all()}
+    return render_template("admin_qr_list.html", styled_ids=styled_ids, **ctx)
+
+
+@app.get("/admin/qr/<species_id>")
+@login_required
+def admin_qr_view(species_id):
+    admin_required()
+    item = get_species_or_404(species_id)
+    style_obj = db.session.get(QRStyle, item.id)
+    qr_style = get_qr_style_dict(item, style_obj)
+    has_custom_style = style_obj is not None
+    return render_template(
+        "admin_qr_view.html",
+        item=item,
+        qr_style=qr_style,
+        has_custom_style=has_custom_style,
+    )
+
+
+@app.get("/admin/qr/<species_id>/personalizar")
+@login_required
+def admin_qr_customize(species_id):
+    admin_required()
+    item = get_species_or_404(species_id)
+    style_obj = db.session.get(QRStyle, item.id)
+    qr_style = get_qr_style_dict(item, style_obj)
+    return render_template(
+        "admin_qr_customize.html",
+        item=item,
+        qr_style=qr_style,
+        frame_options=QR_FRAME_OPTIONS,
+        module_options=QR_MODULE_OPTIONS,
+        has_custom_style=style_obj is not None,
+    )
+
+
+@app.post("/admin/qr/<species_id>/personalizar")
+@login_required
+def admin_qr_customize_post(species_id):
+    admin_required()
+    item = get_species_or_404(species_id)
+    style_obj = db.session.get(QRStyle, item.id)
+    if style_obj is None:
+        style_obj = QRStyle(species_id=item.id)
+        db.session.add(style_obj)
+
+    data = get_qr_style_dict(item, style_obj, request.form)
+    style_obj.frame_style = data["frame_style"]
+    style_obj.module_style = data["module_style"]
+    style_obj.fill_color = data["fill_color"]
+    style_obj.back_color = data["back_color"]
+    style_obj.accent_color = data["accent_color"]
+    style_obj.label_text = data["label_text"]
+    style_obj.top_text = data["top_text"]
+    style_obj.box_size = data["box_size"]
+    style_obj.border = data["border"]
+
+    db.session.commit()
+    flash("QR personalizado guardado.", "ok")
+    return redirect(url_for("admin_qr_customize", species_id=item.id))
+
+
+@app.post("/admin/qr/<species_id>/personalizar/reset")
+@login_required
+def admin_qr_reset(species_id):
+    admin_required()
+    item = get_species_or_404(species_id)
+    style_obj = db.session.get(QRStyle, item.id)
+    if style_obj:
+        db.session.delete(style_obj)
+        db.session.commit()
+    flash("QR restablecido al estilo simple.", "ok")
+    return redirect(url_for("admin_qr_customize", species_id=item.id))
+
+
+@app.get("/admin/qr/<species_id>/imagen.<fmt>")
+@login_required
+def admin_qr_image(species_id, fmt):
+    admin_required()
+    item = get_species_or_404(species_id)
+    style_obj = db.session.get(QRStyle, item.id)
+    style_data = get_qr_style_dict(item, style_obj, request.args if request.args else None)
+    img = render_qr_image(item, style_data)
+
+    fmt = (fmt or "png").lower()
+    if fmt not in {"png", "jpg", "jpeg"}:
+        abort(404)
+
+    download = request.args.get("download") == "1"
+    filename = f"qr-{item.id}.{'jpg' if fmt in {'jpg', 'jpeg'} else 'png'}"
+
+    bio = BytesIO()
+    if fmt in {"jpg", "jpeg"}:
+        if img.mode != "RGB":
+            background = Image.new("RGB", img.size, ImageColor.getrgb(style_data["back_color"]))
+            if img.mode == "RGBA":
+                background.paste(img, mask=img.split()[-1])
+            else:
+                background.paste(img)
+            img = background
+        img.save(bio, format="JPEG", quality=95)
+        mimetype = "image/jpeg"
+    else:
+        img.save(bio, format="PNG")
+        mimetype = "image/png"
+
+    headers = {}
+    disposition = "attachment" if download else "inline"
+    headers["Content-Disposition"] = f'{disposition}; filename="{filename}"'
+    return Response(bio.getvalue(), mimetype=mimetype, headers=headers)
 
 # --------- CHAT API (RAG) ---------
 

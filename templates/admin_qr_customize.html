@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}Admin | Personalizar QR{% endblock %}
+{% block content %}
+<div class="flex items-start justify-between flex-wrap gap-4">
+  <div>
+    <h1 class="text-2xl font-semibold">Personalizar QR</h1>
+    <p class="text-sm text-slate-600">{{ item.nombre_comun }} · <span class="font-mono">{{ item.id }}</span></p>
+  </div>
+  <div class="flex gap-2 flex-wrap">
+    <a href="{{ url_for('admin_qr_view', species_id=item.id) }}" class="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50">Ver QR</a>
+    <a href="{{ url_for('admin_qr_list') }}" class="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50">Volver</a>
+  </div>
+</div>
+
+<div class="mt-6 grid gap-6 lg:grid-cols-[1fr,390px]">
+  <form method="post" class="rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm space-y-5">
+    <div class="grid gap-4 md:grid-cols-2">
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">Plantilla</label>
+        <select name="frame_style" id="frame_style" class="w-full rounded-2xl border border-slate-300 px-4 py-2">
+          {% for value, label in frame_options.items() %}
+          <option value="{{ value }}" {% if qr_style.frame_style == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">Forma del QR</label>
+        <select name="module_style" id="module_style" class="w-full rounded-2xl border border-slate-300 px-4 py-2">
+          {% for value, label in module_options.items() %}
+          <option value="{{ value }}" {% if qr_style.module_style == value %}selected{% endif %}>{{ label }}</option>
+          {% endfor %}
+        </select>
+      </div>
+    </div>
+
+    <div class="grid gap-4 md:grid-cols-3">
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">Color QR</label>
+        <input type="color" name="fill_color" id="fill_color" value="{{ qr_style.fill_color }}" class="h-12 w-full rounded-2xl border border-slate-300 bg-white p-2">
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">Fondo</label>
+        <input type="color" name="back_color" id="back_color" value="{{ qr_style.back_color }}" class="h-12 w-full rounded-2xl border border-slate-300 bg-white p-2">
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">Acento</label>
+        <input type="color" name="accent_color" id="accent_color" value="{{ qr_style.accent_color }}" class="h-12 w-full rounded-2xl border border-slate-300 bg-white p-2">
+      </div>
+    </div>
+
+    <div class="grid gap-4 md:grid-cols-2">
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">Texto superior</label>
+        <input type="text" maxlength="80" name="top_text" id="top_text" value="{{ qr_style.top_text }}" placeholder="BioScan" class="w-full rounded-2xl border border-slate-300 px-4 py-2">
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">Texto inferior</label>
+        <input type="text" maxlength="160" name="label_text" id="label_text" value="{{ qr_style.label_text }}" placeholder="Texto debajo del QR" class="w-full rounded-2xl border border-slate-300 px-4 py-2">
+      </div>
+    </div>
+
+    <div class="grid gap-4 md:grid-cols-2">
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">Tamaño del módulo</label>
+        <input type="range" min="6" max="18" step="1" name="box_size" id="box_size" value="{{ qr_style.box_size }}" class="w-full">
+        <div class="text-xs text-slate-500 mt-1">Valor: <span id="box_size_val">{{ qr_style.box_size }}</span></div>
+      </div>
+      <div>
+        <label class="mb-1 block text-sm font-medium text-slate-700">Margen (quiet zone)</label>
+        <input type="range" min="2" max="10" step="1" name="border" id="border" value="{{ qr_style.border }}" class="w-full">
+        <div class="text-xs text-slate-500 mt-1">Valor: <span id="border_val">{{ qr_style.border }}</span></div>
+      </div>
+    </div>
+
+    <div class="flex gap-2 flex-wrap">
+      <button type="submit" class="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Guardar personalización</button>
+      {% if has_custom_style %}
+      <button type="submit" formaction="{{ url_for('admin_qr_reset', species_id=item.id) }}" formmethod="post" class="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50" onclick="return confirm('¿Restablecer al QR simple?');">Restablecer</button>
+      {% endif %}
+    </div>
+  </form>
+
+  <div class="rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm">
+    <div class="text-sm font-semibold">Vista previa</div>
+    <img id="qrPreview" class="mt-4 w-full rounded-2xl border border-slate-200 bg-white"
+      src="{{ url_for('admin_qr_image', species_id=item.id, fmt='png') }}?frame_style={{ qr_style.frame_style }}&module_style={{ qr_style.module_style }}&fill_color={{ qr_style.fill_color|urlencode }}&back_color={{ qr_style.back_color|urlencode }}&accent_color={{ qr_style.accent_color|urlencode }}&label_text={{ qr_style.label_text|urlencode }}&top_text={{ qr_style.top_text|urlencode }}&box_size={{ qr_style.box_size }}&border={{ qr_style.border }}"
+      alt="Vista previa QR">
+
+    <div class="mt-4 flex gap-2 flex-wrap">
+      <a id="downloadPng" href="{{ url_for('admin_qr_image', species_id=item.id, fmt='png', download=1) }}" class="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Descargar PNG</a>
+      <a id="downloadJpg" href="{{ url_for('admin_qr_image', species_id=item.id, fmt='jpg', download=1) }}" class="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50">Descargar JPG</a>
+    </div>
+  </div>
+</div>
+
+<script>
+(function () {
+  const formIds = [
+    'frame_style', 'module_style', 'fill_color', 'back_color', 'accent_color',
+    'label_text', 'top_text', 'box_size', 'border'
+  ];
+  const preview = document.getElementById('qrPreview');
+  const downloadPng = document.getElementById('downloadPng');
+  const downloadJpg = document.getElementById('downloadJpg');
+  const boxSize = document.getElementById('box_size');
+  const border = document.getElementById('border');
+  const boxSizeVal = document.getElementById('box_size_val');
+  const borderVal = document.getElementById('border_val');
+  const basePng = '{{ url_for("admin_qr_image", species_id=item.id, fmt="png") }}';
+  const baseJpg = '{{ url_for("admin_qr_image", species_id=item.id, fmt="jpg") }}';
+
+  function buildQuery(download) {
+    const params = new URLSearchParams();
+    formIds.forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      params.set(id, el.value);
+    });
+    if (download) params.set('download', '1');
+    return params.toString();
+  }
+
+  function updatePreview() {
+    if (boxSizeVal && boxSize) boxSizeVal.textContent = boxSize.value;
+    if (borderVal && border) borderVal.textContent = border.value;
+    const query = buildQuery(false);
+    preview.src = basePng + '?' + query + '&_ts=' + Date.now();
+    downloadPng.href = basePng + '?' + buildQuery(true);
+    downloadJpg.href = baseJpg + '?' + buildQuery(true);
+  }
+
+  formIds.forEach((id) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.addEventListener('input', updatePreview);
+    el.addEventListener('change', updatePreview);
+  });
+})();
+</script>
+{% endblock %}

@@ -69,7 +69,24 @@ class Species(db.Model):
     def curiosidades(self, value):
         self.curiosidades_json = json.dumps(value or [], ensure_ascii=False)
 
+class QRStyle(db.Model):
+    species_id = db.Column(db.String(64), db.ForeignKey("species.id"), primary_key=True)
 
+    frame_style = db.Column(db.String(40), nullable=False, default="simple")
+    module_style = db.Column(db.String(40), nullable=False, default="square")
+
+    fill_color = db.Column(db.String(20), nullable=False, default="#111827")
+    back_color = db.Column(db.String(20), nullable=False, default="#ffffff")
+    accent_color = db.Column(db.String(20), nullable=False, default="#059669")
+
+    label_text = db.Column(db.String(160), nullable=True, default="")
+    top_text = db.Column(db.String(80), nullable=True, default="BioScan")
+
+    box_size = db.Column(db.Integer, nullable=False, default=10)
+    border = db.Column(db.Integer, nullable=False, default=4)
+
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, onupdate=datetime.utcnow)
+    
 class MuseumDoc(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     species_id = db.Column(db.String(64), db.ForeignKey(

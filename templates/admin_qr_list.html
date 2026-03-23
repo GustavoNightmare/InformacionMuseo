@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Admin | Gestión QR{% endblock %}
+{% block content %}
+<div class="flex items-end justify-between flex-wrap gap-3">
+  <div>
+    <h1 class="text-2xl font-semibold">Gestión QR</h1>
+    <p class="text-sm text-slate-600">Genera, visualiza y personaliza los QRs de las especies.</p>
+  </div>
+</div>
+
+<form method="get" class="mt-6 grid gap-3 rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm md:grid-cols-4">
+  <div class="md:col-span-2">
+    <label class="mb-1 block text-sm font-medium text-slate-700">Buscar</label>
+    <input type="text" name="q" value="{{ q or '' }}"
+      placeholder="Buscar por ID, nombre común, nombre científico, familia u orden"
+      class="w-full rounded-2xl border border-slate-300 px-4 py-2 outline-none focus:border-emerald-500">
+  </div>
+
+  <div>
+    <label class="mb-1 block text-sm font-medium text-slate-700">Familia</label>
+    <select name="familia" class="w-full rounded-2xl border border-slate-300 px-4 py-2 outline-none focus:border-emerald-500">
+      <option value="">Todas</option>
+      {% for f in familias %}
+      <option value="{{ f }}" {% if familia == f %}selected{% endif %}>{{ f }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div>
+    <label class="mb-1 block text-sm font-medium text-slate-700">Orden</label>
+    <select name="orden" class="w-full rounded-2xl border border-slate-300 px-4 py-2 outline-none focus:border-emerald-500">
+      <option value="">Todos</option>
+      {% for o in ordenes %}
+      <option value="{{ o }}" {% if orden == o %}selected{% endif %}>{{ o }}</option>
+      {% endfor %}
+    </select>
+  </div>
+
+  <div class="md:col-span-4 flex flex-wrap items-center justify-between gap-3">
+    <p class="text-sm text-slate-600">Resultados: <span class="font-semibold text-slate-800">{{ items|length }}</span></p>
+    <div class="flex gap-2">
+      <a href="{{ url_for('admin_qr_list') }}" class="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50">Limpiar</a>
+      <button type="submit" class="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Buscar</button>
+    </div>
+  </div>
+</form>
+
+<div class="mt-6 rounded-3xl border border-emerald-100 bg-white shadow-sm overflow-hidden">
+  <table class="w-full text-sm">
+    <thead class="bg-emerald-50 text-slate-700">
+      <tr>
+        <th class="text-left p-3">ID</th>
+        <th class="text-left p-3">Nombre común</th>
+        <th class="text-left p-3">Nombre científico</th>
+        <th class="text-left p-3">Estado QR</th>
+        <th class="text-left p-3">Acciones</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for s in items %}
+      <tr class="border-t align-top">
+        <td class="p-3 font-mono">{{ s.id }}</td>
+        <td class="p-3">{{ s.nombre_comun }}</td>
+        <td class="p-3 text-slate-600">{{ s.nombre_cientifico or '—' }}</td>
+        <td class="p-3">
+          {% if s.id in styled_ids %}
+          <span class="rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-800">Personalizado</span>
+          {% else %}
+          <span class="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">Simple</span>
+          {% endif %}
+        </td>
+        <td class="p-3 flex gap-2 flex-wrap">
+          <a class="rounded-xl border px-3 py-1 hover:bg-slate-50" href="{{ url_for('admin_qr_view', species_id=s.id) }}">Ver QR</a>
+          <a class="rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-1 text-emerald-700 hover:bg-emerald-100" href="{{ url_for('admin_qr_customize', species_id=s.id) }}">Personalizar QR</a>
+        </td>
+      </tr>
+      {% else %}
+      <tr><td colspan="5" class="p-6 text-center text-slate-500">No se encontraron especies con esos filtros.</td></tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</div>
+{% endblock %}
