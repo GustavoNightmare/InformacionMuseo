@@ -3,7 +3,7 @@ from models import Visit, Species, db
 def build_structured_context(user_id: int | None, species: Species) -> str:
     parts = []
     parts.append("DATOS ESTRUCTURADOS DE LA ESPECIE (BD):")
-    parts.append(f"ID: {species.id}")
+    parts.append(f"ID QR: {species.qr_id}")
     parts.append(f"Nombre común: {species.nombre_comun}")
     if species.nombre_cientifico:
         parts.append(f"Nombre científico: {species.nombre_cientifico}")
@@ -30,6 +30,6 @@ def build_structured_context(user_id: int | None, species: Species) -> str:
         if last_visits:
             parts.append("\nRECORRIDO RECIENTE DEL USUARIO (últimas visitas):")
             for v, sp in last_visits:
-                parts.append(f"- {sp.id}: {sp.nombre_comun}")
+                parts.append(f"- {sp.qr_id}: {sp.nombre_comun}")
 
     return "\n".join(parts)

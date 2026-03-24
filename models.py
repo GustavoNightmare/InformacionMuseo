@@ -30,6 +30,7 @@ class User(UserMixin, db.Model):
 
 class Species(db.Model):
     id = db.Column(db.String(64), primary_key=True)
+    qr_id = db.Column(db.String(64), unique=True, nullable=False, index=True)
 
     nombre_comun = db.Column(db.String(200), nullable=False)
     nombre_cientifico = db.Column(db.String(200), nullable=True)
@@ -81,6 +82,10 @@ class QRStyle(db.Model):
 
     label_text = db.Column(db.String(160), nullable=True, default="")
     top_text = db.Column(db.String(80), nullable=True, default="BioScan")
+    show_top_text = db.Column(db.Boolean, nullable=False, default=True)
+    show_label_text = db.Column(db.Boolean, nullable=False, default=True)
+    top_text_size = db.Column(db.Integer, nullable=False, default=18)
+    label_text_size = db.Column(db.Integer, nullable=False, default=18)
 
     box_size = db.Column(db.Integer, nullable=False, default=10)
     border = db.Column(db.Integer, nullable=False, default=4)

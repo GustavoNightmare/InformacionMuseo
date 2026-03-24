@@ -24,7 +24,7 @@
       <div class="h-full w-full grid place-items-center text-slate-500 text-sm">Sin imagen</div>
       {% endif %}
     </div>
-    <div class="p-4 text-xs text-slate-500">ID: <span class="font-mono">{{ item.id }}</span></div>
+    <div class="p-4 text-xs text-slate-500">ID QR: <span class="font-mono">{{ item.qr_id }}</span></div>
 
     {% if item.audio %}
     <div class="px-4 pb-4">
@@ -102,7 +102,7 @@
     <div class="flex items-center justify-between px-4 py-3 bg-emerald-50 border-b border-emerald-100">
       <div>
         <div class="font-semibold">Chat de la especie</div>
-        <div class="text-xs text-slate-600">Pregunta sobre: <span class="font-mono">{{ item.id }}</span></div>
+        <div class="text-xs text-slate-600">Pregunta sobre: <span class="font-mono">{{ item.qr_id }}</span></div>
       </div>
       <button id="chatClose" class="rounded-xl px-3 py-1 text-sm hover:bg-emerald-100">✕</button>
     </div>
@@ -129,7 +129,7 @@
 </div>
 
 <script>
-  const SPECIES_ID = "{{ item.id }}";
+  const SPECIES_INTERNAL_ID = "{{ item.id }}";
   const IS_AUTH = {{ "true" if current_user.is_authenticated else "false" }};
 
   const fab = document.getElementById("chatFab");
@@ -181,7 +181,7 @@
       const r = await fetch("/api/chat_stream", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ species_id: SPECIES_ID, message: text })
+        body: JSON.stringify({ species_id: SPECIES_INTERNAL_ID, message: text })
       });
 
       if (r.status === 401) {

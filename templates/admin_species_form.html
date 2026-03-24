@@ -13,11 +13,13 @@
     action="{% if item %}{{ url_for('admin_species_edit_post', species_id=item.id) }}{% else %}{{ url_for('admin_species_new_post') }}{% endif %}">
 
     <div>
-      <div class="text-xs text-slate-500 mb-1">ID (contenido del QR)</div>
-      <input name="id" {% if item %}disabled{% endif %} value="{{ item.id if item else '' }}" placeholder="condor-001"
+      <div class="text-xs text-slate-500 mb-1">ID QR</div>
+      <input name="qr_id" {% if item %}readonly{% endif %} value="{{ item.qr_id if item else '' }}" placeholder="condor-001"
         class="w-full rounded-2xl border border-slate-200 px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" />
       {% if item %}
-      <div class="text-xs text-slate-500 mt-1">El ID no se edita para no romper los QRs.</div>
+      <div class="text-xs text-slate-500 mt-1">Para cambiar este ID QR, usa Gestión QR > Personalizar QR.</div>
+      {% else %}
+      <div class="text-xs text-slate-500 mt-1">Este valor también se usará para crear el ID interno automáticamente.</div>
       {% endif %}
     </div>
 
@@ -112,7 +114,7 @@
           </div>
 
           <div class="p-4">
-            <div class="text-xs text-slate-500">{{ item.id if item else 'preview-001' }}</div>
+            <div class="text-xs text-slate-500">{{ item.qr_id if item else 'qr-001' }}</div>
             <div class="mt-1 font-semibold">{{ item.nombre_comun if item else 'Nombre de ejemplo' }}</div>
             <div class="text-sm italic text-slate-600">{{ item.nombre_cientifico if item else 'Nombre científico' }}
             </div>

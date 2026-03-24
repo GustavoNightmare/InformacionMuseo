@@ -79,6 +79,7 @@ def unique_name(prefix: str, filename: str) -> str:
     safe = secure_filename(filename)
     return f"{prefix}_{uuid.uuid4().hex}_{safe}"
 
+
 QR_FRAME_OPTIONS = {
     "simple": "Simple",
     "card": "Tarjeta",
@@ -109,6 +110,12 @@ def normalize_hex_color(raw: str | None, default: str) -> str:
     return default
 
 
+def parse_bool(raw, default: bool) -> bool:
+    if raw is None:
+        return default
+    return str(raw).strip().lower() in {"1", "true", "on", "yes", "y"}
+
+
 def get_qr_defaults(species: Species) -> dict:
     return {
         "frame_style": "simple",
@@ -118,6 +125,10 @@ def get_qr_defaults(species: Species) -> dict:
         "accent_color": "#059669",
         "label_text": "",
         "top_text": "BioScan",
+        "show_top_text": True,
+        "show_label_text": True,
+        "top_text_size": 18,
+        "label_text_size": 18,
         "box_size": 10,
         "border": 4,
     }
@@ -132,24 +143,58 @@ def get_qr_style_dict(species: Species, style_obj: QRStyle | None = None, overri
             "fill_color": style_obj.fill_color or data["fill_color"],
             "back_color": style_obj.back_color or data["back_color"],
             "accent_color": style_obj.accent_color or data["accent_color"],
-            "label_text": style_obj.label_text or "",
-            "top_text": style_obj.top_text or data["top_text"],
+            "label_text": style_obj.label_text if style_obj.label_text is not None else "",
+            "top_text": style_obj.top_text if style_obj.top_text is not None else data["top_text"],
+            "show_top_text": bool(style_obj.show_top_text) if style_obj.show_top_text is not None else data["show_top_text"],
+            "show_label_text": bool(style_obj.show_label_text) if style_obj.show_label_text is not None else data["show_label_text"],
+            "top_text_size": style_obj.top_text_size or data["top_text_size"],
+            "label_text_size": style_obj.label_text_size or data["label_text_size"],
             "box_size": style_obj.box_size or data["box_size"],
             "border": style_obj.border or data["border"],
         })
 
     source = overrides or {}
     if hasattr(source, "get"):
-        frame_style = (source.get("frame_style") or data["frame_style"]).strip()
-        module_style = (source.get("module_style") or data["module_style"]).strip()
+        is_multi_dict = hasattr(source, "getlist")
+        frame_style = (source.get("frame_style")
+                       or data["frame_style"]).strip()
+        module_style = (source.get("module_style")
+                        or data["module_style"]).strip()
         data["frame_style"] = frame_style if frame_style in QR_FRAME_OPTIONS else data["frame_style"]
         data["module_style"] = module_style if module_style in QR_MODULE_OPTIONS else data["module_style"]
-        data["fill_color"] = normalize_hex_color(source.get("fill_color"), data["fill_color"])
-        data["back_color"] = normalize_hex_color(source.get("back_color"), data["back_color"])
-        data["accent_color"] = normalize_hex_color(source.get("accent_color"), data["accent_color"])
-        data["label_text"] = (source.get("label_text") if source.get("label_text") is not None else data["label_text"])[:160].strip()
-        data["top_text"] = ((source.get("top_text") if source.get("top_text") is not None else data["top_text"]) or "BioScan")[:80].strip()
-        data["box_size"] = clamp_int(source.get("box_size"), 6, 18, data["box_size"])
+        data["fill_color"] = normalize_hex_color(
+            source.get("fill_color"), data["fill_color"])
+        data["back_color"] = normalize_hex_color(
+            source.get("back_color"), data["back_color"])
+        data["accent_color"] = normalize_hex_color(
+            source.get("accent_color"), data["accent_color"])
+        raw_label_text = source.get("label_text")
+        data["label_text"] = str(
+            raw_label_text if raw_label_text is not None else data["label_text"]
+        )[:160].strip()
+
+        raw_top_text = source.get("top_text")
+        data["top_text"] = str(
+            raw_top_text if raw_top_text is not None else data["top_text"]
+        )[:80].strip()
+
+        if is_multi_dict:
+            data["show_top_text"] = parse_bool(source.get("show_top_text"), False)
+            data["show_label_text"] = parse_bool(source.get("show_label_text"), False)
+        else:
+            if "show_top_text" in source:
+                data["show_top_text"] = parse_bool(
+                    source.get("show_top_text"), data["show_top_text"])
+            if "show_label_text" in source:
+                data["show_label_text"] = parse_bool(
+                    source.get("show_label_text"), data["show_label_text"])
+
+        data["top_text_size"] = clamp_int(source.get(
+            "top_text_size"), 10, 52, data["top_text_size"])
+        data["label_text_size"] = clamp_int(source.get(
+            "label_text_size"), 10, 52, data["label_text_size"])
+        data["box_size"] = clamp_int(source.get(
+            "box_size"), 6, 18, data["box_size"])
         data["border"] = clamp_int(source.get("border"), 2, 10, data["border"])
 
     return data
@@ -164,7 +209,7 @@ def get_species_admin_filters():
     if q:
         term = f"%{q}%"
         query = query.filter(or_(
-            Species.id.ilike(term),
+            Species.qr_id.ilike(term),
             Species.nombre_comun.ilike(term),
             Species.nombre_cientifico.ilike(term),
             Species.familia.ilike(term),
@@ -234,13 +279,42 @@ def fit_text(draw, text, font, max_width: int) -> str:
     return text + "…"
 
 
-def render_qr_image(species: Species, style_data: dict) -> Image.Image:
+def load_qr_font(size: int, *, bold: bool = False):
+    target_size = clamp_int(size, 8, 96, 18)
+    font_names = [
+        "DejaVuSans-Bold.ttf" if bold else "DejaVuSans.ttf",
+        "arialbd.ttf" if bold else "arial.ttf",
+    ]
+
+    for name in font_names:
+        try:
+            return ImageFont.truetype(name, target_size)
+        except OSError:
+            continue
+
+    windows_fonts = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
+    for name in font_names:
+        try:
+            return ImageFont.truetype(os.path.join(windows_fonts, name), target_size)
+        except OSError:
+            continue
+
+    try:
+        return ImageFont.load_default(size=target_size)
+    except TypeError:
+        return ImageFont.load_default()
+
+
+def render_qr_image(species: Species, style_data: dict, qr_value: str | None = None) -> Image.Image:
     qr = qrcode.QRCode(
         error_correction=qrcode.constants.ERROR_CORRECT_H,
         box_size=style_data["box_size"],
         border=style_data["border"],
     )
-    qr.add_data(species.id)
+    qr_payload = sanitize_id(qr_value if qr_value is not None else (species.qr_id or species.id))
+    if not qr_payload:
+        qr_payload = species.id
+    qr.add_data(qr_payload)
     qr.make(fit=True)
 
     fill_rgb = ImageColor.getrgb(style_data["fill_color"])
@@ -250,67 +324,104 @@ def render_qr_image(species: Species, style_data: dict) -> Image.Image:
     qr_img = qr.make_image(
         image_factory=StyledPilImage,
         module_drawer=get_module_drawer(style_data["module_style"]),
-        color_mask=SolidFillColorMask(front_color=fill_rgb, back_color=back_rgb),
+        color_mask=SolidFillColorMask(
+            front_color=fill_rgb, back_color=back_rgb),
     ).convert("RGBA")
 
-    if style_data["frame_style"] == "simple" and not style_data["label_text"]:
+    frame_style = style_data["frame_style"]
+    top_text = (style_data.get("top_text") or "").strip()
+    label_text = (style_data.get("label_text") or "").strip()
+    show_top_text = bool(style_data.get("show_top_text", True)) and bool(top_text)
+    show_label_text = bool(style_data.get("show_label_text", True)) and bool(label_text)
+
+    if frame_style == "simple" and not show_top_text and not show_label_text:
         return qr_img
 
-    font_title = ImageFont.load_default()
-    font_body = ImageFont.load_default()
+    font_title = load_qr_font(style_data.get("top_text_size", 18), bold=True)
+    font_body = load_qr_font(style_data.get("label_text_size", 18), bold=False)
+    font_scan = load_qr_font(16, bold=True)
 
-    qr_w, qr_h = qr_img.size
-    label_text = style_data["label_text"].strip()
-    top_text = style_data["top_text"].strip() or "BioScan"
+    measure_img = Image.new("RGBA", (8, 8), (255, 255, 255, 0))
+    measure_draw = ImageDraw.Draw(measure_img)
+
+    def text_height(text_value: str, font_obj) -> int:
+        bbox = measure_draw.textbbox((0, 0), text_value or "Ag", font=font_obj)
+        return int(max(1, bbox[3] - bbox[1]))
+
+    top_text_h = text_height(top_text, font_title)
+    label_text_h = text_height(label_text, font_body)
 
     header_h = 0
-    footer_h = 0
-    padding = 26
+    if show_top_text:
+        header_h = top_text_h + 16
+        if frame_style in {"badge", "scanme"}:
+            header_h = max(42, header_h)
 
-    if style_data["frame_style"] in {"badge", "scanme"}:
-        header_h = 42
-    if style_data["frame_style"] == "card":
-        footer_h = 64 if label_text else 38
-    elif style_data["frame_style"] == "badge":
-        footer_h = 58 if label_text else 32
-    elif style_data["frame_style"] == "scanme":
-        footer_h = 78 if label_text else 54
-    else:
-        footer_h = 34 if label_text else 18
+    footer_h = 18
+    if frame_style == "card":
+        footer_h = 22
+    elif frame_style == "badge":
+        footer_h = 20
+    elif frame_style == "scanme":
+        footer_h = 54
+
+    if show_label_text:
+        footer_h += label_text_h + 14
+
+    qr_w, qr_h = qr_img.size
+    padding = 26
 
     canvas_w = qr_w + padding * 2
     canvas_h = qr_h + padding * 2 + header_h + footer_h
 
-    canvas = Image.new("RGBA", (canvas_w, canvas_h), back_rgb + ((255,) if len(back_rgb) == 3 else tuple()))
+    canvas = Image.new("RGBA", (canvas_w, canvas_h), back_rgb +
+                       ((255,) if len(back_rgb) == 3 else tuple()))
     draw = ImageDraw.Draw(canvas)
 
-    if style_data["frame_style"] == "card":
-        draw.rounded_rectangle((6, 6, canvas_w - 6, canvas_h - 6), radius=32, fill=back_rgb, outline=accent_rgb, width=8)
-    elif style_data["frame_style"] == "badge":
-        draw.rounded_rectangle((6, 6, canvas_w - 6, canvas_h - 6), radius=34, fill=back_rgb, outline=accent_rgb, width=6)
-        draw.rounded_rectangle((18, 18, canvas_w - 18, 18 + header_h), radius=18, fill=accent_rgb)
-    elif style_data["frame_style"] == "scanme":
-        draw.rounded_rectangle((8, 8, canvas_w - 8, canvas_h - 8), radius=36, fill=back_rgb, outline=accent_rgb, width=8)
+    if frame_style == "card":
+        draw.rounded_rectangle((6, 6, canvas_w - 6, canvas_h - 6),
+                               radius=32, fill=back_rgb, outline=accent_rgb, width=8)
+    elif frame_style == "badge":
+        draw.rounded_rectangle((6, 6, canvas_w - 6, canvas_h - 6),
+                               radius=34, fill=back_rgb, outline=accent_rgb, width=6)
+        if show_top_text:
+            draw.rounded_rectangle(
+                (18, 18, canvas_w - 18, 18 + header_h), radius=18, fill=accent_rgb)
+    elif frame_style == "scanme":
+        draw.rounded_rectangle((8, 8, canvas_w - 8, canvas_h - 8),
+                               radius=36, fill=back_rgb, outline=accent_rgb, width=8)
         footer_button_h = 34
-        draw.rounded_rectangle((24, canvas_h - footer_button_h - 18, canvas_w - 24, canvas_h - 18), radius=16, fill=accent_rgb)
+        draw.rounded_rectangle((24, canvas_h - footer_button_h - 18,
+                               canvas_w - 24, canvas_h - 18), radius=16, fill=accent_rgb)
     else:
-        draw.rounded_rectangle((10, 10, canvas_w - 10, canvas_h - 10), radius=28, fill=back_rgb, outline=accent_rgb, width=5)
+        draw.rounded_rectangle((10, 10, canvas_w - 10, canvas_h - 10),
+                               radius=28, fill=back_rgb, outline=accent_rgb, width=5)
 
     qr_x = (canvas_w - qr_w) // 2
     qr_y = padding + header_h
     canvas.alpha_composite(qr_img, (qr_x, qr_y))
 
-    if header_h:
+    if show_top_text:
         header_text = fit_text(draw, top_text, font_title, canvas_w - 60)
-        draw.text((canvas_w // 2, 18 + header_h // 2), header_text, anchor="mm", fill=back_rgb, font=font_title)
+        if frame_style == "badge":
+            header_y = 18 + header_h // 2
+            header_color = back_rgb
+        else:
+            header_y = padding + header_h // 2
+            header_color = fill_rgb
+        draw.text((canvas_w // 2, header_y), header_text,
+                  anchor="mm", fill=header_color, font=font_title)
 
-    if label_text:
-        label_text = fit_text(draw, label_text, font_body, canvas_w - 40)
-        label_y = qr_y + qr_h + 18
-        draw.text((canvas_w // 2, label_y), label_text, anchor="ma", fill=fill_rgb, font=font_body)
+    if show_label_text:
+        footer_text = fit_text(draw, label_text, font_body, canvas_w - 40)
+        label_top = qr_y + qr_h + 10
+        label_y = label_top + label_text_h // 2 + 1
+        draw.text((canvas_w // 2, label_y), footer_text,
+                  anchor="mm", fill=fill_rgb, font=font_body)
 
-    if style_data["frame_style"] == "scanme":
-        draw.text((canvas_w // 2, canvas_h - 35), "ESCANEA", anchor="mm", fill=back_rgb, font=font_title)
+    if frame_style == "scanme":
+        draw.text((canvas_w // 2, canvas_h - 35), "ESCANEA",
+                  anchor="mm", fill=back_rgb, font=font_scan)
 
     return canvas
 
@@ -339,6 +450,12 @@ def ensure_schema_updates():
 
     changed = False
 
+    if "qr_id" not in cols:
+        db.session.execute(
+            text("ALTER TABLE species ADD COLUMN qr_id VARCHAR(64)")
+        )
+        changed = True
+
     if "thumb_pos_x" not in cols:
         db.session.execute(
             text("ALTER TABLE species ADD COLUMN thumb_pos_x INTEGER DEFAULT 50")
@@ -354,6 +471,101 @@ def ensure_schema_updates():
     if "thumb_zoom" not in cols:
         db.session.execute(
             text("ALTER TABLE species ADD COLUMN thumb_zoom INTEGER DEFAULT 100")
+        )
+        changed = True
+
+    species_rows = db.session.execute(
+        text("SELECT id, qr_id FROM species ORDER BY id ASC")
+    ).fetchall()
+    seen_qr_ids = set()
+
+    for sid, qr_id in species_rows:
+        base = sanitize_id(qr_id or sid)
+        if not base:
+            base = "species"
+
+        candidate = base
+        suffix = 1
+        while candidate in seen_qr_ids:
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+
+        seen_qr_ids.add(candidate)
+
+        if qr_id != candidate:
+            db.session.execute(
+                text("UPDATE species SET qr_id = :qr_id WHERE id = :sid"),
+                {"qr_id": candidate, "sid": sid},
+            )
+            changed = True
+
+    idx_rows = db.session.execute(text("PRAGMA index_list(species)")).fetchall()
+    has_unique_qr_index = False
+    for row in idx_rows:
+        idx_name = row[1]
+        is_unique = bool(row[2])
+        if not is_unique:
+            continue
+
+        idx_info = db.session.execute(
+            text(f'PRAGMA index_info("{idx_name}")')
+        ).fetchall()
+        if len(idx_info) == 1 and idx_info[0][2] == "qr_id":
+            has_unique_qr_index = True
+            break
+
+    if not has_unique_qr_index:
+        db.session.execute(
+            text("CREATE UNIQUE INDEX IF NOT EXISTS uq_species_qr_id ON species(qr_id)")
+        )
+        changed = True
+
+    qr_table = "qr_style"
+    qr_rows = db.session.execute(
+        text(f'PRAGMA table_info("{qr_table}")')
+    ).fetchall()
+    qr_cols = {row[1] for row in qr_rows}
+
+    if "show_top_text" not in qr_cols:
+        db.session.execute(
+            text(f'ALTER TABLE "{qr_table}" ADD COLUMN show_top_text BOOLEAN DEFAULT 1')
+        )
+        changed = True
+
+    if "show_label_text" not in qr_cols:
+        db.session.execute(
+            text(f'ALTER TABLE "{qr_table}" ADD COLUMN show_label_text BOOLEAN DEFAULT 1')
+        )
+        changed = True
+
+    if "top_text_size" not in qr_cols:
+        db.session.execute(
+            text(f'ALTER TABLE "{qr_table}" ADD COLUMN top_text_size INTEGER DEFAULT 18')
+        )
+        changed = True
+
+    if "label_text_size" not in qr_cols:
+        db.session.execute(
+            text(f'ALTER TABLE "{qr_table}" ADD COLUMN label_text_size INTEGER DEFAULT 18')
+        )
+        changed = True
+
+    null_rows = db.session.execute(
+        text(
+            f'SELECT COUNT(*) FROM "{qr_table}" '
+            "WHERE show_top_text IS NULL OR show_label_text IS NULL "
+            "OR top_text_size IS NULL OR label_text_size IS NULL"
+        )
+    ).scalar() or 0
+    if int(null_rows) > 0:
+        db.session.execute(
+            text(
+                f'UPDATE "{qr_table}" SET '
+                "show_top_text = COALESCE(show_top_text, 1), "
+                "show_label_text = COALESCE(show_label_text, 1), "
+                "top_text_size = COALESCE(top_text_size, 18), "
+                "label_text_size = COALESCE(label_text_size, 18)"
+            )
         )
         changed = True
 
@@ -787,7 +999,7 @@ def especies():
     query = Species.query
     if q:
         query = query.filter(
-            (Species.id.ilike(f"%{q}%")) |
+            (Species.qr_id.ilike(f"%{q}%")) |
             (Species.nombre_comun.ilike(f"%{q}%")) |
             (Species.nombre_cientifico.ilike(f"%{q}%"))
         )
@@ -823,14 +1035,14 @@ def especies():
 # -------------------------
 
 
-@app.get("/scan/<species_id>")
+@app.get("/scan/<qr_id>")
 @login_required
-def scan_species(species_id):
-    sid = sanitize_id(species_id)
-    if not sid or not ID_RE.match(sid):
+def scan_species(qr_id):
+    normalized_qr_id = sanitize_id(qr_id)
+    if not normalized_qr_id or not ID_RE.match(normalized_qr_id):
         abort(404)
 
-    item = db.session.get(Species, sid)
+    item = Species.query.filter_by(qr_id=normalized_qr_id).first()
     if not item:
         abort(404)
 
@@ -841,17 +1053,17 @@ def scan_species(species_id):
         db.session.add(Visit(user_id=current_user.id, species_id=item.id))
         db.session.commit()
 
-    return redirect(url_for("especie", species_id=item.id))
+    return redirect(url_for("especie", qr_id=item.qr_id))
 # ----- DETAIL -----
 
 
-@app.get("/especie/<species_id>")
-def especie(species_id):
-    sid = sanitize_id(species_id)
-    if not sid or not ID_RE.match(sid):
+@app.get("/especie/<qr_id>")
+def especie(qr_id):
+    normalized_qr_id = sanitize_id(qr_id)
+    if not normalized_qr_id or not ID_RE.match(normalized_qr_id):
         abort(404)
 
-    item = db.session.get(Species, sid)
+    item = Species.query.filter_by(qr_id=normalized_qr_id).first()
     if not item:
         abort(404)
 
@@ -869,56 +1081,7 @@ def especie(species_id):
 @login_required
 def admin_species_list():
     admin_required()
-
-    q = (request.args.get("q") or "").strip()
-    familia = (request.args.get("familia") or "").strip()
-    orden = (request.args.get("orden") or "").strip()
-
-    query = Species.query
-
-    if q:
-        term = f"%{q}%"
-        query = query.filter(or_(
-            Species.id.ilike(term),
-            Species.nombre_comun.ilike(term),
-            Species.nombre_cientifico.ilike(term),
-            Species.familia.ilike(term),
-            Species.orden.ilike(term),
-        ))
-
-    if familia:
-        query = query.filter(Species.familia == familia)
-
-    if orden:
-        query = query.filter(Species.orden == orden)
-
-    items = query.order_by(Species.nombre_comun.asc()).all()
-
-    familias = [
-        value for (value,) in db.session.query(Species.familia)
-        .filter(Species.familia.isnot(None), Species.familia != "")
-        .distinct()
-        .order_by(Species.familia.asc())
-        .all()
-    ]
-
-    ordenes = [
-        value for (value,) in db.session.query(Species.orden)
-        .filter(Species.orden.isnot(None), Species.orden != "")
-        .distinct()
-        .order_by(Species.orden.asc())
-        .all()
-    ]
-
-    return render_template(
-        "admin_species_list.html",
-        items=items,
-        q=q,
-        familia=familia,
-        orden=orden,
-        familias=familias,
-        ordenes=ordenes,
-    )
+    return render_template("admin_species_list.html", **get_species_admin_filters())
 
 
 @app.get("/admin/especies/nueva")
@@ -988,12 +1151,17 @@ def handle_uploads_for_species(species_id: str, species_obj: Species):
 def admin_species_new_post():
     admin_required()
 
-    sid = sanitize_id(request.form.get("id"))
-    if not sid or not ID_RE.match(sid):
-        flash("ID inválido. Usa solo letras/números/guion/guion_bajo (ej: condor-001).", "error")
+    qr_id = sanitize_id(request.form.get("qr_id"))
+    if not qr_id or not ID_RE.match(qr_id):
+        flash("ID QR inválido. Usa solo letras/números/guion/guion_bajo (ej: condor-001).", "error")
         return redirect(url_for("admin_species_new"))
+    if Species.query.filter_by(qr_id=qr_id).first():
+        flash("Ese ID QR ya existe.", "error")
+        return redirect(url_for("admin_species_new"))
+
+    sid = qr_id
     if db.session.get(Species, sid):
-        flash("Ese ID ya existe.", "error")
+        flash("No se pudo crear la especie. Intenta con otro ID QR.", "error")
         return redirect(url_for("admin_species_new"))
 
     nombre_comun = (request.form.get("nombre_comun") or "").strip()
@@ -1003,6 +1171,7 @@ def admin_species_new_post():
 
     sp = Species(
         id=sid,
+        qr_id=qr_id,
         nombre_comun=nombre_comun,
         nombre_cientifico=(request.form.get(
             "nombre_cientifico") or "").strip(),
@@ -1171,6 +1340,7 @@ def admin_reindex(species_id):
         flash(f"Falló reindex: {e}", "error")
     return redirect(url_for("admin_species_edit", species_id=sid))
 
+
 @app.get("/admin/qr")
 @login_required
 def admin_qr_list():
@@ -1223,6 +1393,20 @@ def admin_qr_customize_post(species_id):
         style_obj = QRStyle(species_id=item.id)
         db.session.add(style_obj)
 
+    new_qr_id = sanitize_id(request.form.get("qr_id"))
+    if not new_qr_id or not ID_RE.match(new_qr_id):
+        flash("ID QR inválido. Usa solo letras/números/guion/guion_bajo.", "error")
+        return redirect(url_for("admin_qr_customize", species_id=item.id))
+
+    conflict = (Species.query
+                .filter(Species.qr_id == new_qr_id, Species.id != item.id)
+                .first())
+    if conflict:
+        flash("Ese ID QR ya está en uso por otra especie.", "error")
+        return redirect(url_for("admin_qr_customize", species_id=item.id))
+
+    item.qr_id = new_qr_id
+
     data = get_qr_style_dict(item, style_obj, request.form)
     style_obj.frame_style = data["frame_style"]
     style_obj.module_style = data["module_style"]
@@ -1231,6 +1415,10 @@ def admin_qr_customize_post(species_id):
     style_obj.accent_color = data["accent_color"]
     style_obj.label_text = data["label_text"]
     style_obj.top_text = data["top_text"]
+    style_obj.show_top_text = data["show_top_text"]
+    style_obj.show_label_text = data["show_label_text"]
+    style_obj.top_text_size = data["top_text_size"]
+    style_obj.label_text_size = data["label_text_size"]
     style_obj.box_size = data["box_size"]
     style_obj.border = data["border"]
 
@@ -1258,20 +1446,27 @@ def admin_qr_image(species_id, fmt):
     admin_required()
     item = get_species_or_404(species_id)
     style_obj = db.session.get(QRStyle, item.id)
-    style_data = get_qr_style_dict(item, style_obj, request.args if request.args else None)
-    img = render_qr_image(item, style_data)
+    style_data = get_qr_style_dict(
+        item, style_obj, request.args if request.args else None)
+    preview_qr_id = sanitize_id(request.args.get("preview_qr_id"))
+    qr_value = item.qr_id or item.id
+    if preview_qr_id and ID_RE.match(preview_qr_id):
+        qr_value = preview_qr_id
+
+    img = render_qr_image(item, style_data, qr_value=qr_value)
 
     fmt = (fmt or "png").lower()
     if fmt not in {"png", "jpg", "jpeg"}:
         abort(404)
 
     download = request.args.get("download") == "1"
-    filename = f"qr-{item.id}.{'jpg' if fmt in {'jpg', 'jpeg'} else 'png'}"
+    filename = f"qr-{qr_value}.{'jpg' if fmt in {'jpg', 'jpeg'} else 'png'}"
 
     bio = BytesIO()
     if fmt in {"jpg", "jpeg"}:
         if img.mode != "RGB":
-            background = Image.new("RGB", img.size, ImageColor.getrgb(style_data["back_color"]))
+            background = Image.new(
+                "RGB", img.size, ImageColor.getrgb(style_data["back_color"]))
             if img.mode == "RGBA":
                 background.paste(img, mask=img.split()[-1])
             else:
@@ -1412,6 +1607,7 @@ def seed():
             return
         sp = Species(
             id="condor-001",
+            qr_id="condor-001",
             nombre_comun="Cóndor Andino",
             nombre_cientifico="Vultur gryphus",
             descripcion="Ave carroñera emblemática de los Andes.",

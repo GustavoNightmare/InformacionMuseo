@@ -4,7 +4,7 @@
 <div class="flex items-start justify-between flex-wrap gap-4">
   <div>
     <h1 class="text-2xl font-semibold">Personalizar QR</h1>
-    <p class="text-sm text-slate-600">{{ item.nombre_comun }} · <span class="font-mono">{{ item.id }}</span></p>
+    <p class="text-sm text-slate-600">{{ item.nombre_comun }} · <span class="font-mono">{{ item.qr_id }}</span></p>
   </div>
   <div class="flex gap-2 flex-wrap">
     <a href="{{ url_for('admin_qr_view', species_id=item.id) }}" class="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50">Ver QR</a>
@@ -14,6 +14,13 @@
 
 <div class="mt-6 grid gap-6 lg:grid-cols-[1fr,390px]">
   <form method="post" class="rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm space-y-5">
+    <div>
+      <label class="mb-1 block text-sm font-medium text-slate-700">ID QR (editable)</label>
+      <input type="text" name="qr_id" id="qr_id" value="{{ item.qr_id }}" maxlength="64"
+        placeholder="condor-001" class="w-full rounded-2xl border border-slate-300 px-4 py-2">
+      <p class="mt-1 text-xs text-slate-500">Este valor es el que se codifica en el QR y se usa para el escaneo.</p>
+    </div>
+
     <div class="grid gap-4 md:grid-cols-2">
       <div>
         <label class="mb-1 block text-sm font-medium text-slate-700">Plantilla</label>
@@ -49,13 +56,33 @@
     </div>
 
     <div class="grid gap-4 md:grid-cols-2">
-      <div>
+      <div class="space-y-2">
         <label class="mb-1 block text-sm font-medium text-slate-700">Texto superior</label>
+        <label class="inline-flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" name="show_top_text" id="show_top_text" class="h-4 w-4 rounded border-slate-300 text-emerald-600"
+            {% if qr_style.show_top_text %}checked{% endif %}>
+          Mostrar texto superior
+        </label>
         <input type="text" maxlength="80" name="top_text" id="top_text" value="{{ qr_style.top_text }}" placeholder="BioScan" class="w-full rounded-2xl border border-slate-300 px-4 py-2">
+        <div>
+          <label class="mb-1 block text-sm font-medium text-slate-700">Tamaño texto superior</label>
+          <input type="range" min="10" max="52" step="1" name="top_text_size" id="top_text_size" value="{{ qr_style.top_text_size }}" class="w-full">
+          <div class="text-xs text-slate-500 mt-1">Valor: <span id="top_text_size_val">{{ qr_style.top_text_size }}</span></div>
+        </div>
       </div>
-      <div>
+      <div class="space-y-2">
         <label class="mb-1 block text-sm font-medium text-slate-700">Texto inferior</label>
+        <label class="inline-flex items-center gap-2 text-sm text-slate-700">
+          <input type="checkbox" name="show_label_text" id="show_label_text" class="h-4 w-4 rounded border-slate-300 text-emerald-600"
+            {% if qr_style.show_label_text %}checked{% endif %}>
+          Mostrar texto inferior
+        </label>
         <input type="text" maxlength="160" name="label_text" id="label_text" value="{{ qr_style.label_text }}" placeholder="Texto debajo del QR" class="w-full rounded-2xl border border-slate-300 px-4 py-2">
+        <div>
+          <label class="mb-1 block text-sm font-medium text-slate-700">Tamaño texto inferior</label>
+          <input type="range" min="10" max="52" step="1" name="label_text_size" id="label_text_size" value="{{ qr_style.label_text_size }}" class="w-full">
+          <div class="text-xs text-slate-500 mt-1">Valor: <span id="label_text_size_val">{{ qr_style.label_text_size }}</span></div>
+        </div>
       </div>
     </div>
 
@@ -83,7 +110,7 @@
   <div class="rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm">
     <div class="text-sm font-semibold">Vista previa</div>
     <img id="qrPreview" class="mt-4 w-full rounded-2xl border border-slate-200 bg-white"
-      src="{{ url_for('admin_qr_image', species_id=item.id, fmt='png') }}?frame_style={{ qr_style.frame_style }}&module_style={{ qr_style.module_style }}&fill_color={{ qr_style.fill_color|urlencode }}&back_color={{ qr_style.back_color|urlencode }}&accent_color={{ qr_style.accent_color|urlencode }}&label_text={{ qr_style.label_text|urlencode }}&top_text={{ qr_style.top_text|urlencode }}&box_size={{ qr_style.box_size }}&border={{ qr_style.border }}"
+      src="{{ url_for('admin_qr_image', species_id=item.id, fmt='png') }}?preview_qr_id={{ item.qr_id|urlencode }}&frame_style={{ qr_style.frame_style }}&module_style={{ qr_style.module_style }}&fill_color={{ qr_style.fill_color|urlencode }}&back_color={{ qr_style.back_color|urlencode }}&accent_color={{ qr_style.accent_color|urlencode }}&label_text={{ qr_style.label_text|urlencode }}&top_text={{ qr_style.top_text|urlencode }}&show_top_text={{ 1 if qr_style.show_top_text else 0 }}&show_label_text={{ 1 if qr_style.show_label_text else 0 }}&top_text_size={{ qr_style.top_text_size }}&label_text_size={{ qr_style.label_text_size }}&box_size={{ qr_style.box_size }}&border={{ qr_style.border }}"
       alt="Vista previa QR">
 
     <div class="mt-4 flex gap-2 flex-wrap">
@@ -97,32 +124,69 @@
 (function () {
   const formIds = [
     'frame_style', 'module_style', 'fill_color', 'back_color', 'accent_color',
-    'label_text', 'top_text', 'box_size', 'border'
+    'label_text', 'top_text', 'show_top_text', 'show_label_text',
+    'top_text_size', 'label_text_size', 'box_size', 'border'
   ];
   const preview = document.getElementById('qrPreview');
   const downloadPng = document.getElementById('downloadPng');
   const downloadJpg = document.getElementById('downloadJpg');
+  const qrIdInput = document.getElementById('qr_id');
   const boxSize = document.getElementById('box_size');
   const border = document.getElementById('border');
+  const showTopText = document.getElementById('show_top_text');
+  const showLabelText = document.getElementById('show_label_text');
+  const topText = document.getElementById('top_text');
+  const labelText = document.getElementById('label_text');
+  const topTextSize = document.getElementById('top_text_size');
+  const labelTextSize = document.getElementById('label_text_size');
   const boxSizeVal = document.getElementById('box_size_val');
   const borderVal = document.getElementById('border_val');
+  const topTextSizeVal = document.getElementById('top_text_size_val');
+  const labelTextSizeVal = document.getElementById('label_text_size_val');
   const basePng = '{{ url_for("admin_qr_image", species_id=item.id, fmt="png") }}';
   const baseJpg = '{{ url_for("admin_qr_image", species_id=item.id, fmt="jpg") }}';
 
+  function normalizeQrId(raw) {
+    return (raw || '').trim().toLowerCase().replace(/[^a-z0-9-_]/g, '');
+  }
+
   function buildQuery(download) {
     const params = new URLSearchParams();
+    const normalizedQrId = normalizeQrId(qrIdInput ? qrIdInput.value : '');
+    if (qrIdInput) qrIdInput.value = normalizedQrId;
+    if (normalizedQrId) {
+      params.set('preview_qr_id', normalizedQrId);
+    }
+
     formIds.forEach((id) => {
       const el = document.getElementById(id);
       if (!el) return;
-      params.set(id, el.value);
+      if (el.type === 'checkbox') {
+        params.set(id, el.checked ? '1' : '0');
+      } else {
+        params.set(id, el.value);
+      }
     });
     if (download) params.set('download', '1');
     return params.toString();
   }
 
+  function syncTextControls() {
+    const topEnabled = showTopText ? showTopText.checked : true;
+    const labelEnabled = showLabelText ? showLabelText.checked : true;
+
+    if (topText) topText.disabled = !topEnabled;
+    if (topTextSize) topTextSize.disabled = !topEnabled;
+    if (labelText) labelText.disabled = !labelEnabled;
+    if (labelTextSize) labelTextSize.disabled = !labelEnabled;
+  }
+
   function updatePreview() {
+    syncTextControls();
     if (boxSizeVal && boxSize) boxSizeVal.textContent = boxSize.value;
     if (borderVal && border) borderVal.textContent = border.value;
+    if (topTextSizeVal && topTextSize) topTextSizeVal.textContent = topTextSize.value;
+    if (labelTextSizeVal && labelTextSize) labelTextSizeVal.textContent = labelTextSize.value;
     const query = buildQuery(false);
     preview.src = basePng + '?' + query + '&_ts=' + Date.now();
     downloadPng.href = basePng + '?' + buildQuery(true);
@@ -135,6 +199,13 @@
     el.addEventListener('input', updatePreview);
     el.addEventListener('change', updatePreview);
   });
+
+  if (qrIdInput) {
+    qrIdInput.addEventListener('input', updatePreview);
+    qrIdInput.addEventListener('change', updatePreview);
+  }
+
+  updatePreview();
 })();
 </script>
 {% endblock %}

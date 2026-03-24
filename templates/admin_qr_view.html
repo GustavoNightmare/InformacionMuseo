@@ -4,7 +4,7 @@
 <div class="flex items-start justify-between flex-wrap gap-4">
   <div>
     <h1 class="text-2xl font-semibold">QR de {{ item.nombre_comun }}</h1>
-    <p class="text-sm text-slate-600">ID: <span class="font-mono">{{ item.id }}</span></p>
+    <p class="text-sm text-slate-600">ID QR: <span class="font-mono">{{ item.qr_id }}</span></p>
   </div>
   <div class="flex gap-2 flex-wrap">
     <a href="{{ url_for('admin_qr_customize', species_id=item.id) }}" class="rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100">Personalizar QR</a>
@@ -61,7 +61,7 @@
     </div>
 
     <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-600">
-      Este QR siempre codifica <span class="font-mono">{{ item.id }}</span>. Si no hay personalización guardada, el sistema genera el QR simple automáticamente.
+      Este QR siempre codifica <span class="font-mono">{{ item.qr_id }}</span>. Si no hay personalización guardada, el sistema genera el QR simple automáticamente.
     </div>
   </div>
 </div>
