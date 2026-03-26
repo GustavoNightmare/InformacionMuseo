@@ -1486,6 +1486,35 @@ def admin_qr_image(species_id, fmt):
 # --------- CHAT API (RAG) ---------
 
 
+@app.get("/api/public/species/<string:qr_id>/tts")
+def get_species_for_tts(qr_id):
+    expected_api_key = (os.getenv("MUSEO_TTS_SHARED_KEY") or "").strip()
+    provided_api_key = (request.headers.get("X-API-Key") or "").strip()
+    if not expected_api_key or provided_api_key != expected_api_key:
+        return jsonify({"error": "unauthorized"}), 401
+
+    normalized_qr_id = sanitize_id(qr_id)
+    if not normalized_qr_id or not ID_RE.match(normalized_qr_id):
+        return jsonify({"error": "species_not_found"}), 404
+
+    item = Species.query.filter_by(qr_id=normalized_qr_id).first()
+    if not item:
+        return jsonify({"error": "species_not_found"}), 404
+
+    return jsonify({
+        "qr_id": item.qr_id,
+        "common_name": item.nombre_comun,
+        "scientific_name": item.nombre_cientifico,
+        "description": item.descripcion,
+        "habitat": item.habitat,
+        "diet": item.dieta,
+        "geographic_distribution": item.zonas,
+        "behavior": item.museo_info,
+        "museum_location": item.map_embed_url,
+        "curiosities": item.curiosidades,
+    }), 200
+
+
 @app.post("/api/chat")
 def api_chat():
     data = request.get_json(silent=True) or {}
