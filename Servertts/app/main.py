@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -13,11 +14,13 @@ import edge_tts
 import httpx
 import numpy as np
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, Query, Request
-from fastapi.responses import FileResponse, JSONResponse,HTMLResponse
+from fastapi import FastAPI, HTTPException, Query, Request, Response
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
 
-load_dotenv()
+BASE_DIR = Path(__file__).resolve().parent.parent
+load_dotenv(BASE_DIR / ".env")
 
 app = FastAPI(
     title="Museo TTS Service",
@@ -27,7 +30,8 @@ app = FastAPI(
 
 MUSEO_API_BASE_URL = os.getenv("MUSEO_API_BASE_URL", "").rstrip("/")
 MUSEO_API_KEY = os.getenv("MUSEO_API_KEY", "")
-MUSEO_TTS_PUBLIC_BASE_URL = os.getenv("MUSEO_TTS_PUBLIC_BASE_URL", "").rstrip("/")
+MUSEO_TTS_PUBLIC_BASE_URL = os.getenv(
+    "MUSEO_TTS_PUBLIC_BASE_URL", "").rstrip("/")
 TTS_API_KEY = os.getenv("TTS_API_KEY", "")
 
 EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "es-CO-GonzaloNeural")
@@ -48,8 +52,10 @@ LAST_DEBUG_INFO = {
     "last_timestamp": 0,
 }
 
+
 class TextToTTSRequest(BaseModel):
     text: str
+
 
 def sanitize_id(value: str) -> str:
     return (value or "").strip()
@@ -70,6 +76,7 @@ def clean_text(value: Any) -> str:
     text = re.sub(r"\s+", " ", text).strip()
     return text
 
+
 @app.post("/tts/from-text")
 async def tts_from_text(
     payload: TextToTTSRequest,
@@ -89,7 +96,8 @@ async def tts_from_text(
         await generate_tts_file(text, tmp_path)
         audio_bytes = Path(tmp_path).read_bytes()
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"tts_generation_error: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"tts_generation_error: {str(e)}")
     finally:
         try:
             if os.path.exists(tmp_path):
@@ -105,6 +113,7 @@ async def tts_from_text(
             "X-TTS-Text-Length": str(len(text)),
         },
     )
+
 
 def normalize_curiosities(curiosities: Any) -> list[str]:
     if curiosities is None:
@@ -150,15 +159,33 @@ def sentence(text: str) -> str:
 def join_sentences(parts: list[str]) -> str:
     return " ".join([sentence(p) for p in parts if clean_text(p)])
 
-def pick_tts_fields(data: dict[str, Any]) -> dict[str, str]:
+
+def pick_tts_fields(data: dict[str, Any]) -> dict[str, Any]:
     return {
-        "common_name": clean_text(data.get("common_name")),
-        "scientific_name": clean_text(data.get("scientific_name")),
-        "description": clean_text(data.get("description")),
-        "habitat": clean_text(data.get("habitat")),
-        "diet": clean_text(data.get("diet")),
-        "geographic_distribution": clean_text(data.get("geographic_distribution")),
+        "common_name": clean_text(data.get("common_name") or data.get("nombre_comun") or data.get("nombre")),
+        "scientific_name": clean_text(data.get("scientific_name") or data.get("nombre_cientifico")),
+        "description": clean_text(data.get("description") or data.get("descripcion")),
+        "habitat": clean_text(data.get("habitat") or data.get("habitad")),
+        "diet": clean_text(data.get("diet") or data.get("dieta") or data.get("alimentacion")),
+        "curiosities": normalize_curiosities(
+            data.get("curiosities")
+            if data.get("curiosities") is not None
+            else data.get("curiosidades")
+        ),
     }
+
+
+def format_curiosities(curiosities: list[str], max_items: int = 3) -> str:
+    items = [clean_text(item) for item in curiosities if clean_text(item)]
+    if not items:
+        return ""
+
+    items = items[:max_items]
+    if len(items) == 1:
+        return f"Como dato curioso, {items[0]}"
+    if len(items) == 2:
+        return f"Como datos curiosos, {items[0]} y {items[1]}"
+    return f"Como datos curiosos, {', '.join(items[:-1])} y {items[-1]}"
 
 
 def build_text_from_species(data: dict[str, Any], style: str = "ficha") -> str:
@@ -169,42 +196,61 @@ def build_text_from_species(data: dict[str, Any], style: str = "ficha") -> str:
     description = data["description"]
     habitat = data["habitat"]
     diet = data["diet"]
-    geographic_distribution = data["geographic_distribution"]
-
-    intro_name = common_name or "Este animal"
+    curiosities = data["curiosities"] if isinstance(
+        data.get("curiosities"), list) else []
 
     if style == "corto":
-        return join_sentences([
-            intro_name,
-            f"Su nombre científico es {scientific_name}" if scientific_name else "",
-            description,
-            f"Habita en {habitat}" if habitat else "",
-            f"Su dieta es {diet}" if diet else "",
-            f"Se encuentra en {geographic_distribution}" if geographic_distribution else "",
-        ])
+        text = join_sentences(
+            [
+                common_name or "Este animal",
+                f"Su nombre científico es {scientific_name}" if scientific_name else "",
+                description,
+                f"Habita en {habitat}" if habitat else "",
+                f"Se alimenta de {diet}" if diet else "",
+                format_curiosities(curiosities, max_items=1),
+            ]
+        )
+        return text or "No se encontró información suficiente de esta especie."
 
     if style == "narrativo":
-        return join_sentences([
-            f"Estás escuchando información sobre {intro_name}",
-            f"Su nombre científico es {scientific_name}" if scientific_name else "",
+        intro = f"Te cuento sobre {common_name}" if common_name else "Te cuento sobre este animal del museo"
+        text = join_sentences(
+            [
+                intro,
+                f"Su nombre científico es {scientific_name}" if scientific_name else "",
+                description,
+                f"Su hábitat es {habitat}" if habitat else "",
+                f"Su alimentación es {diet}" if diet else "",
+                format_curiosities(curiosities),
+            ]
+        )
+        return text or "No se encontró información suficiente de esta especie."
+
+    if common_name and scientific_name:
+        intro = f"Este animal llamado {common_name} tiene como nombre científico {scientific_name}"
+    elif common_name:
+        intro = f"Este animal llamado {common_name}"
+    elif scientific_name:
+        intro = f"Este animal, conocido científicamente como {scientific_name}"
+    else:
+        intro = "Este animal del museo"
+
+    text = join_sentences(
+        [
+            intro,
             description,
             f"Su hábitat es {habitat}" if habitat else "",
-            f"Su dieta es {diet}" if diet else "",
-            f"Se distribuye en {geographic_distribution}" if geographic_distribution else "",
-        ])
+            f"Su alimentación es {diet}" if diet else "",
+            format_curiosities(curiosities),
+        ]
+    )
+    return text or "No se encontró información suficiente de esta especie."
 
-    return join_sentences([
-        f"Nombre común: {common_name}" if common_name else "Especie del museo",
-        f"Nombre científico: {scientific_name}" if scientific_name else "",
-        f"Descripción: {description}" if description else "",
-        f"Hábitat: {habitat}" if habitat else "",
-        f"Dieta: {diet}" if diet else "",
-        f"Distribución geográfica: {geographic_distribution}" if geographic_distribution else "",
-    ])
 
 def cache_key_for(qr_id: str, style: str, voice: str) -> str:
     raw = f"{qr_id}|{style}|{voice}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
 
 def decode_qr_from_jpeg_bytes(image_bytes: bytes) -> tuple[str | None, str]:
     if not image_bytes:
@@ -231,20 +277,23 @@ def decode_qr_from_jpeg_bytes(image_bytes: bytes) -> tuple[str | None, str]:
         return qr_text, "grayscale"
 
     # Intento 3: threshold binario
-    _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    _, thresh = cv2.threshold(
+        gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
     qr_text, points, _ = detector.detectAndDecode(thresh)
     qr_text = sanitize_id(qr_text)
     if qr_text and ID_RE.fullmatch(qr_text):
         return qr_text, "threshold_otsu"
 
     # Intento 4: agrandar imagen
-    upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0, interpolation=cv2.INTER_CUBIC)
+    upscaled = cv2.resize(gray, None, fx=2.0, fy=2.0,
+                          interpolation=cv2.INTER_CUBIC)
     qr_text, points, _ = detector.detectAndDecode(upscaled)
     qr_text = sanitize_id(qr_text)
     if qr_text and ID_RE.fullmatch(qr_text):
         return qr_text, "upscaled_gray"
 
     return None, "not_found"
+
 
 def save_debug_frame(image_bytes: bytes, prefix: str = "last") -> str:
     timestamp = int(time.time())
@@ -257,6 +306,7 @@ def save_debug_frame(image_bytes: bytes, prefix: str = "last") -> str:
     last_path.write_bytes(image_bytes)
 
     return str(path)
+
 
 async def fetch_species_from_main_server(qr_id: str) -> dict[str, Any]:
     if not MUSEO_API_BASE_URL:
@@ -289,7 +339,8 @@ async def fetch_species_from_main_server(qr_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=502, detail="invalid_main_server_json")
 
     if not isinstance(data, dict):
-        raise HTTPException(status_code=502, detail="invalid_main_server_payload")
+        raise HTTPException(
+            status_code=502, detail="invalid_main_server_payload")
 
     return data
 
@@ -317,19 +368,20 @@ async def ensure_audio_file_for_qr(qr_id: str, style: str) -> tuple[str, dict[st
     if os.path.exists(output_path):
         return output_path, species_data, text
 
-    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3")
+    tmp_fd, tmp_path = tempfile.mkstemp(suffix=".mp3", dir=AUDIO_CACHE_DIR)
     os.close(tmp_fd)
 
     try:
         await generate_tts_file(text, tmp_path)
-        Path(tmp_path).replace(output_path)
+        shutil.move(tmp_path, output_path)
     except Exception as e:
         try:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
         except Exception:
             pass
-        raise HTTPException(status_code=500, detail=f"tts_generation_error: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"tts_generation_error: {str(e)}")
 
     return output_path, species_data, text
 
@@ -367,6 +419,7 @@ async def tts_by_qr(
             "X-TTS-Style": style,
         },
     )
+
 
 @app.post("/qr/resolve-frame")
 async def qr_resolve_frame(
@@ -423,6 +476,7 @@ async def qr_resolve_frame(
         "debug_frame_url": "/debug/last-frame",
     })
 
+
 @app.get("/debug/view", response_class=HTMLResponse)
 async def debug_view():
     html = f"""
@@ -446,6 +500,7 @@ async def debug_view():
     """
     return HTMLResponse(content=html)
 
+
 @app.get("/debug/last-frame")
 async def debug_last_frame():
     last_path = Path(DEBUG_FRAMES_DIR) / "last_frame.jpg"
@@ -453,9 +508,12 @@ async def debug_last_frame():
         raise HTTPException(status_code=404, detail="no_debug_frame_yet")
 
     return FileResponse(str(last_path), media_type="image/jpeg")
+
+
 @app.get("/debug/last-status")
 async def debug_last_status():
     return JSONResponse(LAST_DEBUG_INFO)
+
 
 @app.post("/tts/from-frame")
 async def tts_from_frame(

@@ -1502,15 +1502,11 @@ def get_species_for_tts(qr_id):
         return jsonify({"error": "species_not_found"}), 404
 
     return jsonify({
-        "qr_id": item.qr_id,
         "common_name": item.nombre_comun,
         "scientific_name": item.nombre_cientifico,
         "description": item.descripcion,
         "habitat": item.habitat,
         "diet": item.dieta,
-        "geographic_distribution": item.zonas,
-        "behavior": item.museo_info,
-        "museum_location": item.map_embed_url,
         "curiosities": item.curiosidades,
     }), 200
 

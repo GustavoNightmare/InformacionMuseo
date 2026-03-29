@@ -1,197 +1,148 @@
-# AGENTS.md – Guidelines for the InformacionMuseo Repository
-
----
-
-## 📦 Project Overview
-- **Language:** Python 3.11
-- **Framework:** Flask (>=3.0)
-- **Database:** SQLite via Flask‑SQLAlchemy
-- **LLM/Embeddings:** Ollama (qwen3.5:4b) + **chromadb**
-- **Containerisation:** Docker Compose (app, ollama, ngrok)
-- **Environment:** `.env` (see `.env.example`)
-
----
-
-## 🛠️ Build / Run Commands
-| Goal | Command | Description |
-|------|---------|-------------|
-| **Run locally (development)** | `python -m venv .venv && source .venv/bin/activate && pip install -r requirements.txt && flask run` | Uses the built‑in Flask dev server (default port 5000). |
-| **Start with Docker** | `docker compose up -d --build` | Brings up `museo‑app`, `ollama` and `ngrok`. |
-| **Stop Docker stack** | `docker compose down` | Stops and removes containers. |
-| **Recreate containers** | `docker compose up -d --build --force-recreate` | Useful after dependency changes. |
-| **View logs** | `docker compose logs -f <service>` | Replace `<service>` with `museo-app`, `ollama` or `ngrok`. |
-| **Run migrations (if added)** | `flask db upgrade` | Placeholder – add Alembic/Flask‑Migrate as needed. |
-
----
-
-## 📋 Linting & Formatting
-- **Formatter:** `black` (auto‑format)
-- **Static type checker:** `mypy --strict`
-- **Linter:** `ruff` (or `flake8` if preferred)
-- **Import order:** `isort` – groups: standard, third‑party, local.
-
+# AGENTS.md - Guide for Agentic Contributors
+This file is for coding agents operating in this repository.
+Follow existing patterns first, then the rules below.
+## 1) Repository Overview
+- Main app: Flask monolith in `app.py`.
+- Models: SQLAlchemy models in `models.py`.
+- LLM and RAG helpers: `llm.py`, `rag.py`, `vector_store.py`.
+- Views/assets: `templates/`, `static/`, `static/uploads/`.
+- Persistent data: `instance/` (SQLite), `chroma_db/` (Chroma DB).
+- Container setup: `Dockerfile`, `docker-compose.yml`, scripts in `docker/`.
+- Optional companion service: FastAPI TTS in `Servertts/app/main.py`.
+- Python target: 3.11.
+- Dependency files: `requirements.txt`, `Servertts/requirements.txt`.
+- Never commit real secrets from `.env` files.
+## 2) Build and Run Commands (Flask App)
+Local setup and run:
 ```bash
-# Install dev tools (add to requirements-dev.txt if you like)
-python -m pip install black ruff isort mypy
+python -m venv .venv
+# Windows PowerShell
+.venv\Scripts\Activate.ps1
+# macOS/Linux
+source .venv/bin/activate
+pip install -r requirements.txt
+flask --app app.py run --debug --port 5000
 ```
-
-### Quick lint / format commands
+Alternative app entrypoint (hardcoded port 5002 in `app.py`):
 ```bash
-# Format all Python files
+python app.py
+```
+Flask CLI commands defined in this repo:
+```bash
+flask --app app.py init-db
+flask --app app.py create-admin
+flask --app app.py create-user
+flask --app app.py seed
+```
+## 3) Docker Commands
+Start all services (`museo-app`, `ollama`, `ngrok`):
+```bash
+docker compose up -d --build
+```
+Stop all services:
+```bash
+docker compose down
+```
+Rebuild and recreate:
+```bash
+docker compose up -d --build --force-recreate
+```
+Service logs:
+```bash
+docker compose logs -f museo-app
+docker compose logs -f ollama
+docker compose logs -f ngrok
+```
+## 4) Lint, Format, and Type-Check
+No committed Black/Ruff/Mypy/Isort config exists right now.
+Use default behavior unless a task explicitly adds tool config.
+Install:
+```bash
+pip install black isort ruff mypy
+```
+Run:
+```bash
 black .
-# Sort imports
 isort .
-# Run linter
-ruff .
-# Type‑check
-mypy . --strict
+ruff check .
+mypy .
 ```
-
----
-
-## ✅ Testing
-The repository does not ship tests yet, but the recommended stack is **pytest** with **pytest‑cov**. Add a `tests/` directory and name files `test_*.py`.
-
-### Install test deps
+## 5) Test Commands (Pytest)
+Current state: no committed `tests/` directory.
+When adding tests, use `tests/test_*.py` and `pytest`.
+Install test deps:
 ```bash
-python -m pip install pytest pytest-cov
+pip install pytest pytest-cov
 ```
-
-### Run the full suite
+Run full suite:
 ```bash
+pytest
 pytest --cov=.
 ```
-
-### Run a single test (by name or file)
+Run a single test file:
 ```bash
-# By test function name (partial match)
-pytest -k my_feature
-
-# By file path
-pytest tests/test_my_feature.py
+pytest tests/test_example.py
 ```
-
----
-
-## 🧩 Code‑Style Guidelines
-### 1️⃣ Imports
-```python
-# 1️⃣ Standard library
-import os
-import re
-
-# 2️⃣ Third‑party
-import flask
-import requests
-from qrcode import QRCode
-
-# 3️⃣ Local application imports
-from .models import User, Species
-from .utils import sanitize_id
+Run a single test function:
+```bash
+pytest tests/test_example.py::test_specific_behavior
 ```
-- One blank line between groups.
-- Alphabetical within each group.
-- Use absolute imports for project modules.
-
-### 2️⃣ Formatting
-- **Line length:** 88 characters (compatible with Black).
-- **Trailing commas** on multi‑line collections.
-- **Quote style:** single quotes `'` for strings, double quotes `"` only when the string contains a single quote.
-- End files with a single newline.
-
-### 3️⃣ Types & Annotations
-- All public functions / methods must have **type hints** for parameters and return values.
-- Use `typing` imports (`List`, `Dict`, `Optional`, `Union`, `Literal`, `TypedDict`).
-- Prefer `|` syntax for Union (Python 3.10+).
-
-```python
-def clamp_int(raw: Any, min_value: int, max_value: int, default: int) -> int:
-    ...
+Run filtered tests:
+```bash
+pytest -k "chat and not slow"
 ```
-
-### 4️⃣ Naming Conventions
-| Element | Convention |
-|---------|-------------|
-| Modules / packages | `snake_case` |
-| Files | `snake_case.py` |
-| Classes | `PascalCase` |
-| Functions / methods | `snake_case` |
-| Variables | `snake_case` |
-| Constants | `UPPER_SNAKE_CASE` |
-| Private/internal | prefix with `_` |
-
-### 5️⃣ Docstrings
-- **Google style** (or NumPy – be consistent).
-- Every public function / class gets a docstring.
-- One‑line summary, blank line, then description/args/returns.
-```python
-def sanitize_id(raw: str) -> str:
-    """Normalize a user‑provided identifier.
-
-    Args:
-        raw: Raw identifier string from the request.
-
-    Returns:
-        A lower‑cased, stripped string containing only ``a‑z``, ``0‑9``, ``-`` and ``_``.
-    """
-``` 
-
-### 6️⃣ Error Handling
-- Raise **custom exceptions** (subclass `Exception`) for domain errors.
-- Use `try/except` only around code that can realistically fail (IO, external API calls).
-- Convert external exceptions to internal ones before propagating.
-- Return Flask error responses with appropriate HTTP status codes, e.g. `abort(400, "Invalid PDF")`.
-
-### 7️⃣ Logging
-- Use `import logging` and configure a module‑level logger: `log = logging.getLogger(__name__)`.
-- Log at appropriate levels (`debug`, `info`, `warning`, `error`).
-- Never log secrets or full request bodies.
-
-### 8️⃣ Security
-- Validate all user‑provided filenames with `secure_filename`.
-- Enforce whitelist of allowed extensions (`ALLOWED_DOCS`, `ALLOWED_IMAGES`).
-- Use prepared statements / ORM query parameters – never concatenate raw strings into SQL.
-- Load secrets from environment variables via `python-dotenv`.
-
----
-
-## 📂 Directory Layout (recommended)
-```
-.
-├─ app.py                     # Flask entry point
-├─ models.py                  # SQLAlchemy models
-├─ rag.py                     # Retrieval‑augmented generation helpers
-├─ llm.py                     # LLM client wrapper
-├─ vector_store.py            # ChromaDB wrapper
-├─ static/                    # Public assets (uploads, images, etc.)
-├─ templates/                 # Jinja2 HTML templates
-├─ tests/                     # Pytest suite (create if missing)
-│   └─ test_*.py
-├─ docker/                    # Docker helper scripts
-├─ .env.example               # Example env file
-├─ requirements.txt           # Production deps
-├─ requirements-dev.txt       # Dev‑only deps (optional)
-└─ AGENTS.md                  # THIS FILE
-```
-
----
-
-## 📜 Cursor / Copilot Rules (if present)
-- No `.cursor` or `.cursorrules` directories were found.
-- No `Copilot` instruction file (`.github/copilot‑instructions.md`) exists.
-- If these files are added later, merge their contents into the relevant sections above.
-
----
-
-## 📚 Helpful References
-- **Flask Docs:** https://flask.palletsprojects.com/
-- **Black Formatter:** https://black.readthedocs.io/
-- **Ruff Linter:** https://ruff.rs/
-- **Pytest Docs:** https://docs.pytest.org/
-- **Mypy:** https://mypy.readthedocs.io/
-- **Isort:** https://pycqa.github.io/isort/
-- **Ollama API:** https://github.com/jmorganca/ollama/blob/main/docs/api.md
-
----
-
-*End of AGENTS.md*
+## 6) Code Style and Engineering Rules
+Imports:
+- Order imports as: standard library, third-party, local modules.
+- Keep one blank line between import groups.
+- Prefer top-level imports.
+- Use function-local imports only for lazy/optional deps.
+Formatting:
+- Keep Black-compatible style (88-char target).
+- Use 4 spaces, never tabs.
+- Keep functions focused; extract helpers for long blocks.
+- Preserve local style in touched files (main app mostly uses double quotes).
+Types:
+- Add type hints for new/changed public functions.
+- Prefer built-in generics (`list[str]`, `dict[str, Any]`).
+- Prefer `X | None` over `Optional[X]` in new code.
+Naming:
+- Variables/functions/modules: `snake_case`.
+- Classes: `PascalCase`.
+- Constants: `UPPER_SNAKE_CASE`.
+Flask conventions:
+- Use explicit method decorators (`@app.get`, `@app.post`).
+- Validate request data early and fail fast.
+- Use `abort(403)` / `abort(404)` for page routes when appropriate.
+- Use `jsonify(...), status_code` for API responses.
+Database conventions:
+- Use existing SQLAlchemy ORM/session patterns.
+- Commit after grouped writes; roll back on failed validation/upload flows.
+- Keep schema update logic centralized (see `ensure_schema_updates()`).
+- Never build SQL from unsanitized user input.
+Error handling:
+- Catch narrow exceptions where practical.
+- Convert network/IO/LLM boundary failures into safe user-facing errors.
+- Keep API error payloads machine-readable and consistent.
+Security and file handling:
+- Sanitize IDs with existing helper and regex patterns.
+- Use `secure_filename` for uploads.
+- Enforce extension allowlists (`ALLOWED_DOCS`, `ALLOWED_AUDIO`, `ALLOWED_IMAGES`).
+- Keep auth checks explicit (`login_required`, admin guards).
+Logging:
+- Prefer concise operational logs.
+- Avoid noisy logs in hot paths.
+- Do not log credentials, API keys, or sensitive payloads.
+## 7) Cursor and Copilot Rules
+Checked for repository-level instruction files:
+- `.cursorrules`
+- `.cursor/rules/`
+- `.github/copilot-instructions.md`
+Current state: none of these files exist in this repo.
+If added later, treat them as higher-priority policy and merge into this guide.
+## 8) Agent Checklist Before Finishing
+- Read all touched files before editing.
+- Keep changes scoped; avoid unrelated refactors.
+- Run relevant format/lint/test commands when possible.
+- Update docs when behavior or commands change.
+- Add targeted tests for changed behavior when scope allows.
