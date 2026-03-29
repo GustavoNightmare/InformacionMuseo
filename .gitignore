@@ -1,27 +1,90 @@
-.venv
-__pycache__
-instance/
-chroma_db
-static/uploads/
-
-# Ollama keys
-ollama/id_ed25519
-ollama/id_ed25519.pub
-
-# Ollama models
-ollama/models/
-ollama/.ollama/
-
-# Python
+# ----------------------------------------------------------------------
+#  Python / virtual‑env
+# ----------------------------------------------------------------------
 .venv/
+env/
+venv/
+ENV/
 __pycache__/
-*.pyc
+*.py[cod]            # *.pyc, *.pyo, *.pyd
+*$py.class
 
-# Local data
-instance/
+# ----------------------------------------------------------------------
+#  Environment / secrets
+# ----------------------------------------------------------------------
+.env                # contiene claves secretas, nunca versionar
+.env.*              # cualquier variante (.env.example se mantiene)
+
+# ----------------------------------------------------------------------
+#  Flask / SQLite
+# ----------------------------------------------------------------------
+instance/           # base de datos SQLite y demás datos locales
+*.sqlite3
+*.db
+
+# ----------------------------------------------------------------------
+#  Docker / Compose artefacts
+# ----------------------------------------------------------------------
+docker-compose.override.yml  # si lo usas solo localmente
+docker/*.log                 # logs de contenedores (si los generas)
+*.tar                        # imágenes exportadas accidentalmente
+
+# ----------------------------------------------------------------------
+#  ChromaDB (vector store)
+# ----------------------------------------------------------------------
 chroma_db/
-static/uploads/
+*.sqlite                # base interna de Chroma (si usa SQLite)
 
-# Env
-.env
-AGENTS.md
+# ----------------------------------------------------------------------
+#  Static uploads / user‑generated content
+# ----------------------------------------------------------------------
+static/uploads/
+static/uploads/**      # todo lo que suban los usuarios
+static/output.ico      # si es un recurso de prueba que no quieres versionar
+
+# ----------------------------------------------------------------------
+#  Servertts (audio y depuración)
+# ----------------------------------------------------------------------
+Servertts/cache_audio/
+Servertts/cache_audio/**          # archivos .mp3 generados
+Servertts/debug_frames/
+Servertts/debug_frames/**         # capturas de pantalla temporales
+
+# ----------------------------------------------------------------------
+#  Logs / temporales
+# ----------------------------------------------------------------------
+*.log
+logs/
+tmp/
+*.tmp
+
+# ----------------------------------------------------------------------
+#  Herramientas de desarrollo
+# ----------------------------------------------------------------------
+.coverage
+htmlcov/
+.tox/
+.nox/
+.idea/          # IDEs (PyCharm, VS Code workspace)
+.vscode/
+*.sublime-workspace
+*.sublime-project
+
+# ----------------------------------------------------------------------
+#  Otros artefactos comunes
+# ----------------------------------------------------------------------
+node_modules/   # por si añades algún front‑end
+dist/
+build/
+*.egg-info/
+*.egg
+*.manifest
+*.spec
+
+# ----------------------------------------------------------------------
+#  Archivos de sistemas operativos / editor
+# ----------------------------------------------------------------------
+.DS_Store
+Thumbs.db
+ehthumbs.db
+Desktop.ini
