@@ -13,6 +13,7 @@ import cv2
 import edge_tts
 import httpx
 import numpy as np
+from fastapi import WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
@@ -250,6 +251,86 @@ def build_text_from_species(data: dict[str, Any], style: str = "ficha") -> str:
 def cache_key_for(qr_id: str, style: str, voice: str) -> str:
     raw = f"{qr_id}|{style}|{voice}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+@app.websocket("/ws/qr-stream")
+async def ws_qr_stream(websocket: WebSocket):
+    await websocket.accept()
+
+    try:
+        key = websocket.query_params.get("key")
+        style = websocket.query_params.get("style", "ficha")
+
+        if not TTS_API_KEY or key != TTS_API_KEY:
+            await websocket.send_json({
+                "type": "error",
+                "detail": "unauthorized",
+            })
+            await websocket.close(code=1008)
+            return
+
+        if style not in {"ficha", "narrativo", "corto"}:
+            await websocket.send_json({
+                "type": "error",
+                "detail": "invalid_style",
+            })
+            await websocket.close(code=1003)
+            return
+
+        while True:
+            message = await websocket.receive()
+
+            if "bytes" not in message or message["bytes"] is None:
+                continue
+
+            image_bytes = message["bytes"]
+            if not image_bytes:
+                continue
+
+            # opcional: si quieres seguir guardando el último frame para debug
+            saved_path = save_debug_frame(image_bytes, prefix="incoming_ws")
+
+            qr_id, decode_method = decode_qr_from_jpeg_bytes(image_bytes)
+
+            LAST_DEBUG_INFO["last_qr_text"] = qr_id or ""
+            LAST_DEBUG_INFO["last_decode_method"] = decode_method
+            LAST_DEBUG_INFO["last_found"] = bool(qr_id)
+            LAST_DEBUG_INFO["last_error"] = "" if qr_id else "qr_not_found_in_frame"
+            LAST_DEBUG_INFO["last_saved_frame"] = saved_path
+            LAST_DEBUG_INFO["last_timestamp"] = int(time.time())
+
+            if not qr_id:
+                # Para máxima velocidad, no respondas nada en los misses.
+                # Así evitas ruido y backlog innecesario.
+                continue
+
+            species_data = await fetch_species_from_main_server(qr_id)
+            filtered_data = pick_tts_fields(species_data)
+            text = build_text_from_species(filtered_data, style=style)
+
+            await websocket.send_json({
+                "type": "qr_found",
+                "found": True,
+                "qr_id": qr_id,
+                "text": text,
+                "fields": filtered_data,
+                "decode_method": decode_method,
+            })
+
+            await websocket.close(code=1000)
+            return
+
+    except WebSocketDisconnect:
+        return
+    except Exception as e:
+        try:
+            await websocket.send_json({
+                "type": "error",
+                "detail": str(e),
+            })
+            await websocket.close(code=1011)
+        except Exception:
+            pass
 
 
 def decode_qr_from_jpeg_bytes(image_bytes: bytes) -> tuple[str | None, str]:

@@ -52,6 +52,152 @@ def ext_of(filename: str) -> str:
     return (filename.rsplit(".", 1)[-1] if "." in filename else "").lower()
 
 
+def normalize_taxonomy(value: str | None) -> str:
+    return (value or "").strip().lower()
+
+
+def species_are_related(a: Species, b: Species) -> tuple[bool, bool, bool]:
+    same_family = bool(
+        normalize_taxonomy(a.familia)
+        and normalize_taxonomy(a.familia) == normalize_taxonomy(b.familia)
+    )
+    same_order = bool(
+        normalize_taxonomy(a.orden)
+        and normalize_taxonomy(a.orden) == normalize_taxonomy(b.orden)
+    )
+    return (same_family or same_order), same_family, same_order
+
+
+def species_context_for_comparison(item: Species) -> str:
+    curiosidades = "; ".join(item.curiosidades) if item.curiosidades else "No disponibles"
+    return "\n".join([
+        f"- ID QR: {item.qr_id or 'No disponible'}",
+        f"- Nombre común: {item.nombre_comun or 'No disponible'}",
+        f"- Nombre científico: {item.nombre_cientifico or 'No disponible'}",
+        f"- Familia: {item.familia or 'No disponible'}",
+        f"- Orden: {item.orden or 'No disponible'}",
+        f"- Descripción: {item.descripcion or 'No disponible'}",
+        f"- Hábitat: {item.habitat or 'No disponible'}",
+        f"- Dieta: {item.dieta or 'No disponible'}",
+        f"- Zonas: {item.zonas or 'No disponible'}",
+        f"- Curiosidades: {curiosidades}",
+    ])
+
+
+def build_basic_comparison_fallback(
+    a: Species,
+    b: Species,
+    same_family: bool,
+    same_order: bool,
+) -> str:
+    relation_parts = []
+    if same_family:
+        relation_parts.append(f"misma familia ({a.familia})")
+    if same_order:
+        relation_parts.append(f"mismo orden ({a.orden})")
+    relation_text = ", ".join(relation_parts) if relation_parts else "sin relación taxonómica directa"
+
+    def norm_text(raw: str | None) -> str:
+        return (raw or "").strip().lower()
+
+    comparisons = [
+        ("Hábitat", a.habitat, b.habitat),
+        ("Dieta", a.dieta, b.dieta),
+        ("Zonas", a.zonas, b.zonas),
+        ("Descripción", a.descripcion, b.descripcion),
+    ]
+
+    diferencias = []
+    similitudes = []
+    for label, va, vb in comparisons:
+        a_text = (va or "").strip()
+        b_text = (vb or "").strip()
+        if a_text and b_text:
+            if norm_text(a_text) == norm_text(b_text):
+                similitudes.append(f"Comparten {label.lower()}: {a_text}.")
+            else:
+                diferencias.append(
+                    f"{label}: {a.nombre_comun} -> {a_text}; {b.nombre_comun} -> {b_text}."
+                )
+        elif a_text or b_text:
+            diferencias.append(
+                f"{label}: {a.nombre_comun} -> {a_text or 'sin dato'}; "
+                f"{b.nombre_comun} -> {b_text or 'sin dato'}."
+            )
+
+    lines = [
+        "No se pudo generar el análisis avanzado con Ollama en este momento.",
+        f"Relación entre especies: {relation_text}.",
+        "",
+        "Diferencias clave:",
+    ]
+    if diferencias:
+        lines.extend([f"- {d}" for d in diferencias])
+    else:
+        lines.append("- No hay suficientes datos distintos para destacar diferencias claras.")
+
+    lines.append("")
+    lines.append("Similitudes clave:")
+    if similitudes:
+        lines.extend([f"- {s}" for s in similitudes])
+    else:
+        lines.append("- No hay suficientes datos para confirmar similitudes fuertes.")
+
+    lines.extend([
+        "",
+        "Nota: para un análisis de morfología y evolución más preciso, se requiere"
+        " información adicional en la ficha o documentos del museo.",
+    ])
+    return "\n".join(lines)
+
+
+def generate_species_comparison_analysis(
+    a: Species,
+    b: Species,
+    same_family: bool,
+    same_order: bool,
+) -> tuple[str, bool]:
+    relation_bits = []
+    if same_family:
+        relation_bits.append(f"misma familia ({a.familia})")
+    if same_order:
+        relation_bits.append(f"mismo orden ({a.orden})")
+    relation = ", ".join(relation_bits)
+
+    system = (
+        "Eres un guia de museo especializado en biodiversidad. "
+        "Responde en espanol claro para publico general. "
+        "Compara dos especies usando SOLO los datos proporcionados. "
+        "Si un dato no esta disponible, dilo explicitamente y evita inventar informacion."
+    )
+    user_prompt = (
+        "Compara estas dos especies emparentadas.\n"
+        f"Relacion taxonomica: {relation}.\n\n"
+        "Entrega:\n"
+        "1) 4-6 diferencias puntuales.\n"
+        "2) 2-4 similitudes relevantes.\n"
+        "3) Explicacion corta sobre posibles diferencias de morfologia y adaptacion/evolucion, "
+        "siempre basada en la informacion disponible.\n"
+        "4) Cierre breve para visitantes del museo.\n\n"
+        "Especie A:\n"
+        f"{species_context_for_comparison(a)}\n\n"
+        "Especie B:\n"
+        f"{species_context_for_comparison(b)}"
+    )
+
+    try:
+        answer = llm.chat([
+            {"role": "system", "content": system},
+            {"role": "user", "content": user_prompt},
+        ]).strip()
+        if answer:
+            return answer, True
+    except Exception:
+        pass
+
+    return build_basic_comparison_fallback(a, b, same_family, same_order), False
+
+
 def wikipedia_summary_es(title: str) -> str:
     if not title:
         return ""
@@ -1031,6 +1177,67 @@ def especies():
         scanned_count=scanned_count,
         scanned_ids=scanned_ids,
         scan_counts=scan_counts
+    )
+
+
+@app.get("/especies/comparar")
+def especies_compare():
+    qr_a = sanitize_id(request.args.get("a") or "")
+    qr_b = sanitize_id(request.args.get("b") or "")
+
+    if not qr_a or not qr_b or not ID_RE.match(qr_a) or not ID_RE.match(qr_b):
+        flash("Selecciona dos especies validas para comparar.", "error")
+        return redirect(url_for("especies"))
+
+    if qr_a == qr_b:
+        flash("Debes seleccionar dos especies diferentes.", "error")
+        return redirect(url_for("especies"))
+
+    item_a = Species.query.filter_by(qr_id=qr_a).first()
+    item_b = Species.query.filter_by(qr_id=qr_b).first()
+
+    if not item_a or not item_b:
+        flash("No se encontraron ambas especies para comparar.", "error")
+        return redirect(url_for("especies"))
+
+    related, same_family, same_order = species_are_related(item_a, item_b)
+    if not related:
+        flash("Solo puedes comparar especies de la misma familia u orden.", "error")
+        return redirect(url_for("especies"))
+
+    analysis, analysis_from_llm = generate_species_comparison_analysis(
+        item_a,
+        item_b,
+        same_family,
+        same_order,
+    )
+
+    comparison_rows = [
+        {"label": "ID QR", "a": item_a.qr_id, "b": item_b.qr_id},
+        {"label": "Nombre comun", "a": item_a.nombre_comun or "-", "b": item_b.nombre_comun or "-"},
+        {"label": "Nombre cientifico", "a": item_a.nombre_cientifico or "-", "b": item_b.nombre_cientifico or "-"},
+        {"label": "Familia", "a": item_a.familia or "-", "b": item_b.familia or "-"},
+        {"label": "Orden", "a": item_a.orden or "-", "b": item_b.orden or "-"},
+        {"label": "Habitat", "a": item_a.habitat or "-", "b": item_b.habitat or "-"},
+        {"label": "Dieta", "a": item_a.dieta or "-", "b": item_b.dieta or "-"},
+        {"label": "Zonas", "a": item_a.zonas or "-", "b": item_b.zonas or "-"},
+        {"label": "Descripcion", "a": item_a.descripcion or "-", "b": item_b.descripcion or "-"},
+        {
+            "label": "Curiosidades",
+            "a": "; ".join(item_a.curiosidades) if item_a.curiosidades else "-",
+            "b": "; ".join(item_b.curiosidades) if item_b.curiosidades else "-",
+        },
+    ]
+
+    return render_template(
+        "especies_compare.html",
+        item_a=item_a,
+        item_b=item_b,
+        same_family=same_family,
+        same_order=same_order,
+        comparison_rows=comparison_rows,
+        analysis=analysis,
+        analysis_from_llm=analysis_from_llm,
     )
 # -------------------------
 

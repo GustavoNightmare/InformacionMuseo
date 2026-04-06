@@ -20,10 +20,36 @@
     {% endif %}
   </div>
 
-  <a href="{{ url_for('index') }}"
-    class="rounded-2xl bg-emerald-600 px-4 py-2 text-white text-sm font-medium hover:bg-emerald-700">
-    Escanear QR
-  </a>
+  <div class="flex items-center gap-2">
+    <button id="compareToggle" type="button"
+      class="rounded-2xl border border-emerald-200 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-50">
+      Comparar especies
+    </button>
+
+    <a href="{{ url_for('index') }}"
+      class="rounded-2xl bg-emerald-600 px-4 py-2 text-white text-sm font-medium hover:bg-emerald-700">
+      Escanear QR
+    </a>
+  </div>
+</div>
+
+<div id="comparePanel" class="mt-4 hidden rounded-3xl border border-emerald-200 bg-emerald-50/60 p-4">
+  <div class="flex flex-wrap items-center justify-between gap-3">
+    <div>
+      <p class="text-sm font-semibold text-emerald-900">Modo comparación activo</p>
+      <p id="compareHint" class="mt-1 text-sm text-emerald-800">
+        Selecciona una especie base. Luego solo podrás elegir otra de la misma familia o del mismo orden.
+      </p>
+      <p class="mt-1 text-xs text-emerald-700">
+        Seleccionadas: <span id="compareCount" class="font-semibold">0</span>/2
+      </p>
+    </div>
+
+    <button id="compareAction" type="button" disabled
+      class="rounded-2xl bg-emerald-700 px-4 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50 hover:bg-emerald-800">
+      Comparar
+    </button>
+  </div>
 </div>
 
 <form class="mt-4 flex gap-2 flex-wrap" method="get" action="{{ url_for('especies') }}">
@@ -38,50 +64,68 @@
   {% for item in items %}
   {% set scanned = (item.id in scanned_ids) if current_user.is_authenticated else false %}
 
-  <a href="{{ url_for('especie', qr_id=item.qr_id) }}"
-    class="group rounded-3xl border border-emerald-100 bg-white shadow-sm hover:shadow-md transition overflow-hidden">
+  <article
+    class="group species-card relative rounded-3xl border border-emerald-100 bg-white shadow-sm transition hover:shadow-md"
+    data-species-id="{{ item.id }}"
+    data-species-qr="{{ item.qr_id }}"
+    data-species-name="{{ item.nombre_comun|e }}"
+    data-family="{{ (item.familia or '')|lower }}"
+    data-family-label="{{ item.familia or '' }}"
+    data-order="{{ (item.orden or '')|lower }}"
+    data-order-label="{{ item.orden or '' }}">
 
-    <div class="relative h-40 bg-slate-100 overflow-hidden">
-      {% if item.imagen %}
-      {% set thumb_x = item.thumb_pos_x if item.thumb_pos_x is not none else 50 %}
-      {% set thumb_y = item.thumb_pos_y if item.thumb_pos_y is not none else 50 %}
-      {% set thumb_zoom = item.thumb_zoom if item.thumb_zoom is not none else 100 %}
+    <label
+      class="compare-checkbox-wrap absolute bottom-3 right-3 z-20 hidden select-none rounded-xl border border-emerald-200 bg-white/95 px-3 py-1 text-xs font-medium text-emerald-800 shadow">
+      <input type="checkbox" class="compare-checkbox mr-2 align-middle" value="{{ item.qr_id }}">
+      <span class="align-middle">Comparar</span>
+    </label>
 
-      <img src="{{ url_for('static', filename=item.imagen) }}" alt="{{ item.nombre_comun }}"
-        class="h-full w-full object-cover transition"
-        style="object-position: {{ thumb_x }}% {{ thumb_y }}%; transform-origin: {{ thumb_x }}% {{ thumb_y }}%; transform: scale({{ thumb_zoom / 100 }});{% if not scanned %} filter: grayscale(100%); opacity:.70;{% endif %}" />
-      {% else %}
-      <div class="h-full w-full grid place-items-center text-slate-500 text-sm">Sin imagen</div>
-      {% endif %}
+    <a href="{{ url_for('especie', qr_id=item.qr_id) }}"
+      class="species-link block rounded-3xl overflow-hidden">
 
-      <div
-        class="absolute top-2 left-2 text-xs px-2 py-1 rounded-full {% if scanned %} bg-emerald-600 text-white {% else %} bg-slate-900/70 text-white {% endif %}">
-        {% if scanned %}Escaneada{% else %}Sin escanear{% endif %}
+      <div class="relative h-40 bg-slate-100 overflow-hidden">
+        {% if item.imagen %}
+        {% set thumb_x = item.thumb_pos_x if item.thumb_pos_x is not none else 50 %}
+        {% set thumb_y = item.thumb_pos_y if item.thumb_pos_y is not none else 50 %}
+        {% set thumb_zoom = item.thumb_zoom if item.thumb_zoom is not none else 100 %}
+
+        <img src="{{ url_for('static', filename=item.imagen) }}" alt="{{ item.nombre_comun }}"
+          class="h-full w-full object-cover transition"
+          style="object-position: {{ thumb_x }}% {{ thumb_y }}%; transform-origin: {{ thumb_x }}% {{ thumb_y }}%; transform: scale({{ thumb_zoom / 100 }});{% if not scanned %} filter: grayscale(100%); opacity:.70;{% endif %}" />
+        {% else %}
+        <div class="h-full w-full grid place-items-center text-slate-500 text-sm">Sin imagen</div>
+        {% endif %}
+
+        <div
+          class="absolute top-2 left-2 text-xs px-2 py-1 rounded-full {% if scanned %} bg-emerald-600 text-white {% else %} bg-slate-900/70 text-white {% endif %}">
+          {% if scanned %}Escaneada{% else %}Sin escanear{% endif %}
+        </div>
+
+        <div class="absolute top-2 right-2 text-xs px-2 py-1 rounded-full bg-white/80 border">
+          Escaneos: {{ scan_counts.get(item.id, 0) }}
+        </div>
       </div>
 
-      <div class="absolute top-2 right-2 text-xs px-2 py-1 rounded-full bg-white/80 border">
-        Escaneos: {{ scan_counts.get(item.id, 0) }}
-      </div>
-    </div>
+      <div class="p-4">
+        <div class="text-xs text-slate-500">ID QR: {{ item.qr_id }}</div>
+        <div class="mt-1 font-semibold">{{ item.nombre_comun }}</div>
+        <div class="text-sm italic text-slate-600">{{ item.nombre_cientifico }}</div>
 
-    <div class="p-4">
-      <div class="text-xs text-slate-500">ID QR: {{ item.qr_id }}</div>
-      <div class="mt-1 font-semibold">{{ item.nombre_comun }}</div>
-      <div class="text-sm italic text-slate-600">{{ item.nombre_cientifico }}</div>
+        {% if item.familia %}
+        <div class="mt-2 text-xs text-slate-600">
+          <span class="font-semibold">Familia:</span> {{ item.familia }}
+        </div>
+        {% endif %}
 
-      {% if item.familia %}
-      <div class="mt-2 text-xs text-slate-600">
-        <span class="font-semibold">Familia:</span> {{ item.familia }}
+        {% if item.zonas %}
+        <div class="mt-2 text-xs text-slate-600 line-clamp-2">
+          <span class="font-semibold">Zonas:</span> {{ item.zonas }}
+        </div>
+        {% endif %}
       </div>
-      {% endif %}
 
-      {% if item.zonas %}
-      <div class="mt-2 text-xs text-slate-600 line-clamp-2">
-        <span class="font-semibold">Zonas:</span> {{ item.zonas }}
-      </div>
-      {% endif %}
-    </div>
-  </a>
+    </a>
+  </article>
   {% endfor %}
 </div>
 
@@ -90,4 +134,183 @@
   No hay resultados.
 </div>
 {% endif %}
+
+<script>
+  (() => {
+    const compareToggle = document.getElementById("compareToggle");
+    const comparePanel = document.getElementById("comparePanel");
+    const compareHint = document.getElementById("compareHint");
+    const compareCount = document.getElementById("compareCount");
+    const compareAction = document.getElementById("compareAction");
+    const cards = Array.from(document.querySelectorAll(".species-card"));
+
+    if (!compareToggle || !comparePanel || !compareHint || !compareCount || !compareAction || cards.length === 0) {
+      return;
+    }
+
+    let compareMode = false;
+    let selectionOrder = [];
+
+    function normalize(raw) {
+      return (raw || "").trim().toLowerCase();
+    }
+
+    function getCheckbox(card) {
+      return card.querySelector(".compare-checkbox");
+    }
+
+    function getCardByQr(qr) {
+      return cards.find((card) => card.dataset.speciesQr === qr) || null;
+    }
+
+    function areRelated(baseCard, candidateCard) {
+      const baseFamily = normalize(baseCard.dataset.family);
+      const baseOrder = normalize(baseCard.dataset.order);
+      const candidateFamily = normalize(candidateCard.dataset.family);
+      const candidateOrder = normalize(candidateCard.dataset.order);
+
+      const sameFamily = baseFamily && candidateFamily && baseFamily === candidateFamily;
+      const sameOrder = baseOrder && candidateOrder && baseOrder === candidateOrder;
+      return sameFamily || sameOrder;
+    }
+
+    function clearSelections() {
+      selectionOrder = [];
+      cards.forEach((card) => {
+        const checkbox = getCheckbox(card);
+        const wrap = card.querySelector(".compare-checkbox-wrap");
+        const link = card.querySelector(".species-link");
+
+        checkbox.checked = false;
+        checkbox.disabled = false;
+        wrap.classList.add("hidden");
+        card.classList.remove("hidden", "opacity-40", "ring-2", "ring-emerald-400", "ring-offset-2");
+        link.classList.remove("pointer-events-none");
+      });
+      compareCount.textContent = "0";
+      compareAction.disabled = true;
+      compareHint.textContent = "Selecciona una especie base. Luego solo podrás elegir otra de la misma familia o del mismo orden.";
+    }
+
+    function applyAvailability() {
+      const baseQr = selectionOrder[0] || "";
+      const baseCard = baseQr ? getCardByQr(baseQr) : null;
+
+      cards.forEach((card) => {
+        const checkbox = getCheckbox(card);
+        const wrap = card.querySelector(".compare-checkbox-wrap");
+        const link = card.querySelector(".species-link");
+        const checked = checkbox.checked;
+
+        wrap.classList.toggle("hidden", !compareMode);
+        link.classList.toggle("pointer-events-none", compareMode);
+
+        if (!compareMode) {
+          checkbox.disabled = false;
+          card.classList.remove("hidden", "opacity-40", "ring-2", "ring-emerald-400", "ring-offset-2");
+          return;
+        }
+
+        let available = true;
+        if (baseCard) {
+          available = card === baseCard || areRelated(baseCard, card);
+        }
+
+        checkbox.disabled = !available && !checked;
+        card.classList.toggle("hidden", Boolean(baseCard) && !available && !checked);
+        card.classList.toggle("opacity-40", !available);
+        card.classList.toggle("ring-2", checked);
+        card.classList.toggle("ring-emerald-400", checked);
+        card.classList.toggle("ring-offset-2", checked);
+      });
+
+      compareCount.textContent = String(selectionOrder.length);
+      compareAction.disabled = selectionOrder.length !== 2;
+
+      if (!baseCard) {
+        compareHint.textContent = "Selecciona una especie base. Luego solo podrás elegir otra de la misma familia o del mismo orden.";
+        return;
+      }
+
+      const baseName = baseCard.dataset.speciesName || baseCard.dataset.speciesQr;
+      const baseFamily = normalize(baseCard.dataset.family);
+      const baseOrder = normalize(baseCard.dataset.order);
+
+      if (!baseFamily && !baseOrder) {
+        compareHint.textContent = `Base: ${baseName}. Esta especie no tiene familia ni orden definidos, por eso no hay comparables.`;
+        return;
+      }
+
+      const relationParts = [];
+      if (baseFamily) relationParts.push(`familia ${baseCard.dataset.familyLabel || baseCard.dataset.family}`);
+      if (baseOrder) relationParts.push(`orden ${baseCard.dataset.orderLabel || baseCard.dataset.order}`);
+      compareHint.textContent = `Base: ${baseName}. Selecciona otra especie que comparta ${relationParts.join(" o ")}.`;
+    }
+
+    function removeFromSelection(qr) {
+      selectionOrder = selectionOrder.filter((id) => id !== qr);
+    }
+
+    cards.forEach((card) => {
+      const checkbox = getCheckbox(card);
+      checkbox.addEventListener("change", () => {
+        const qr = checkbox.value;
+        if (checkbox.checked) {
+          if (!selectionOrder.includes(qr)) {
+            selectionOrder.push(qr);
+          }
+
+          if (selectionOrder.length > 2) {
+            checkbox.checked = false;
+            removeFromSelection(qr);
+            applyAvailability();
+            return;
+          }
+
+          if (selectionOrder.length >= 2) {
+            const baseCard = getCardByQr(selectionOrder[0]);
+            const currentCard = getCardByQr(qr);
+            if (baseCard && currentCard && selectionOrder[0] !== qr && !areRelated(baseCard, currentCard)) {
+              checkbox.checked = false;
+              removeFromSelection(qr);
+              alert("Solo puedes comparar especies de la misma familia o del mismo orden.");
+            }
+          }
+        } else {
+          removeFromSelection(qr);
+        }
+
+        selectionOrder = selectionOrder.filter((id) => {
+          const c = getCardByQr(id);
+          return c && getCheckbox(c).checked;
+        });
+
+        applyAvailability();
+      });
+    });
+
+    compareToggle.addEventListener("click", () => {
+      compareMode = !compareMode;
+      comparePanel.classList.toggle("hidden", !compareMode);
+
+      if (compareMode) {
+        compareToggle.textContent = "Cancelar comparación";
+        compareToggle.classList.remove("border-emerald-200", "text-emerald-700");
+        compareToggle.classList.add("border-rose-200", "text-rose-700", "bg-rose-50");
+        applyAvailability();
+      } else {
+        compareToggle.textContent = "Comparar especies";
+        compareToggle.classList.remove("border-rose-200", "text-rose-700", "bg-rose-50");
+        compareToggle.classList.add("border-emerald-200", "text-emerald-700");
+        clearSelections();
+      }
+    });
+
+    compareAction.addEventListener("click", () => {
+      if (selectionOrder.length !== 2) return;
+      const [a, b] = selectionOrder;
+      window.location.href = `{{ url_for('especies_compare') }}?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`;
+    });
+  })();
+</script>
 {% endblock %}

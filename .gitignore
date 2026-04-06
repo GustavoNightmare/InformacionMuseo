@@ -8,6 +8,10 @@ ENV/
 __pycache__/
 *.py[cod]            # *.pyc, *.pyo, *.pyd
 *$py.class
+.pytest_cache/
+.cache_audio/
+.debug_frames/
+
 
 # ----------------------------------------------------------------------
 #  Environment / secrets
@@ -30,6 +34,11 @@ docker/*.log                 # logs de contenedores (si los generas)
 *.tar                        # imágenes exportadas accidentalmente
 
 # ----------------------------------------------------------------------
+#  Ollama (model persistence)
+# ----------------------------------------------------------------------
+ollama/
+
+# ----------------------------------------------------------------------
 #  ChromaDB (vector store)
 # ----------------------------------------------------------------------
 chroma_db/
@@ -49,6 +58,13 @@ Servertts/cache_audio/
 Servertts/cache_audio/**          # archivos .mp3 generados
 Servertts/debug_frames/
 Servertts/debug_frames/**         # capturas de pantalla temporales
+
+# ----------------------------------------------------------------------
+#  Atajos viejos que pueden quedar sueltos accidentalmente
+# ----------------------------------------------------------------------
+./debug_frames
+./cache_audio
+./prueba audio
 
 # ----------------------------------------------------------------------
 #  Logs / temporales

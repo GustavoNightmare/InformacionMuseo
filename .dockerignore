@@ -10,3 +10,6 @@ chroma_db
 ollama
 static/uploads
 AGENTS.md
+Servertts/.env
+Servertts/cache_audio
+Servertts/debug_frames

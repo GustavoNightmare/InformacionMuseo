@@ -20,6 +20,30 @@ services:
     depends_on:
       - ollama
 
+  servertts:
+    build:
+      context: ./Servertts
+      dockerfile: Dockerfile
+    container_name: servertts
+    restart: unless-stopped
+    environment:
+      MUSEO_API_BASE_URL: http://museo-app:5000
+      MUSEO_API_KEY: ${MUSEO_TTS_SHARED_KEY}
+      MUSEO_TTS_PUBLIC_BASE_URL: ${MUSEO_TTS_PUBLIC_BASE_URL:-}
+      TTS_API_KEY: ${TTS_API_KEY}
+      EDGE_TTS_VOICE: ${EDGE_TTS_VOICE:-es-CO-GonzaloNeural}
+      EDGE_TTS_RATE: ${EDGE_TTS_RATE:-+0%}
+      EDGE_TTS_VOLUME: ${EDGE_TTS_VOLUME:-+0%}
+      AUDIO_CACHE_DIR: /app/cache_audio
+      DEBUG_FRAMES_DIR: /app/debug_frames
+    ports:
+      - "8010:8010"
+    volumes:
+      - ./Servertts/cache_audio:/app/cache_audio
+      - ./Servertts/debug_frames:/app/debug_frames
+    depends_on:
+      - museo-app
+
   ollama:
     image: ollama/ollama:latest
     container_name: ollama
@@ -36,8 +60,6 @@ services:
     image: ngrok/ngrok:latest
     container_name: ngrok
     restart: unless-stopped
-    env_file:
-      - .env
     environment:
       NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN}
     command: [ "http", "http://museo-app:5000" ]
@@ -45,3 +67,15 @@ services:
       - "4040:4040"
     depends_on:
       - museo-app
+
+  ngrok-tts:
+    image: ngrok/ngrok:latest
+    container_name: ngrok-tts
+    restart: unless-stopped
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_TTS_AUTHTOKEN}
+    command: [ "http", "http://servertts:8010" ]
+    ports:
+      - "4041:4040"
+    depends_on:
+      - servertts

@@ -1,71 +1,97 @@
-# InformacionMuseo con Docker, Ollama y ngrok
+# InformacionMuseo con Docker, Ollama, ServerTTS y ngrok
 
-Este paquete deja el proyecto listo para correr con 3 servicios:
+Este stack deja el proyecto listo con 5 servicios:
 
-- `museo-app`: aplicación Flask
-- `ollama`: LLM local (`qwen3.5:4b`) + embeddings (`nomic-embed-text`)
-- `ngrok`: túnel HTTPS para acceder desde el celular y permitir cámara
+- `museo-app`: aplicación Flask principal.
+- `ollama`: LLM local (chat + embeddings).
+- `ngrok`: túnel HTTPS para la app principal.
+- `servertts`: API FastAPI para TTS y resolución de QR por frame.
+- `ngrok-tts`: túnel HTTPS dedicado para `servertts` con otro token.
 
-## 1. Preparar variables
+## 1) Preparar variables
 
 ```bash
 cp .env.example .env
 ```
 
-Edita `.env` y coloca por lo menos:
+Edita `.env` y completa como mínimo:
 
 - `SECRET_KEY`
 - `ADMIN_USER`
 - `ADMIN_PASS`
-- `NGROK_AUTHTOKEN`
+- `MUSEO_TTS_SHARED_KEY` (clave compartida entre Flask y servertts)
+- `TTS_API_KEY` (clave para consumidores del TTS)
+- `NGROK_AUTHTOKEN` (cuenta ngrok del sistema principal)
+- `NGROK_TTS_AUTHTOKEN` (otra cuenta/token para el túnel de TTS)
 
-## 2. Levantar todo
+Opcional pero recomendado:
+
+- `MUSEO_TTS_PUBLIC_BASE_URL` = URL HTTPS pública de `ngrok-tts`.
+
+## 2) Levantar todo
 
 ```bash
 docker compose up -d --build
 ```
 
-La primera vez, el servicio `ollama` intentará descargar automáticamente:
+La primera vez, `ollama` intentará descargar modelos (chat y embeddings),
+por lo que puede tardar bastante según red y hardware.
 
-- `qwen3.5:4b`
-- `nomic-embed-text`
+## 3) Servicios y puertos
 
-Eso puede tardar bastante en la Orange Pi según la red y el almacenamiento.
+- App principal local: `http://IP_O_HOST:5000`
+- Inspector ngrok principal: `http://IP_O_HOST:4040`
+- ServerTTS local: `http://IP_O_HOST:8010`
+- Inspector ngrok TTS: `http://IP_O_HOST:4041`
 
-## 3. Ver la aplicación
+Health checks rápidos:
 
-En la red local:
-
-```text
-http://IP_DE_TU_ORANGE_PI:5000
+```bash
+curl http://IP_O_HOST:5000
+curl http://IP_O_HOST:8010/health
 ```
 
-## 4. Ver la URL HTTPS de ngrok
+## 4) Obtener URLs HTTPS públicas
 
-Puedes verla con cualquiera de estas opciones:
+Logs del ngrok principal:
 
 ```bash
 docker compose logs -f ngrok
 ```
 
-O entrando al inspector web de ngrok:
+Logs del ngrok dedicado a TTS:
 
-```text
-http://IP_DE_TU_ORANGE_PI:4040
+```bash
+docker compose logs -f ngrok-tts
 ```
 
-La URL pública HTTPS es la que debes abrir en el celular para que la cámara funcione.
+Cada uno publicará su propia URL HTTPS en logs e inspector.
 
-## 5. Persistencia
+## 5) Cómo queda la integración TTS
 
-Estos datos quedan guardados en carpetas del proyecto:
+- `servertts` consulta al Flask por:
+  - `GET /api/public/species/<qr_id>/tts`
+- Para autorizarse contra Flask usa:
+  - `MUSEO_API_KEY = MUSEO_TTS_SHARED_KEY`
+- Para autorizar clientes contra `servertts` usa:
+  - `TTS_API_KEY`
+
+En Docker Compose, `servertts` apunta automáticamente a:
+
+- `MUSEO_API_BASE_URL=http://museo-app:5000`
+
+## 6) Persistencia
+
+Estos datos se mantienen en carpetas del proyecto:
 
 - `instance/` -> SQLite
 - `chroma_db/` -> ChromaDB
 - `static/uploads/` -> archivos subidos
 - `ollama/` -> modelos descargados de Ollama
+- `Servertts/cache_audio/` -> audios MP3 cacheados
+- `Servertts/debug_frames/` -> imágenes para depuración QR
 
-## 6. Comandos útiles
+## 7) Comandos útiles
 
 Parar servicios:
 
@@ -73,38 +99,59 @@ Parar servicios:
 docker compose down
 ```
 
-Ver logs:
+Ver logs por servicio:
 
 ```bash
 docker compose logs -f museo-app
 docker compose logs -f ollama
+docker compose logs -f servertts
 docker compose logs -f ngrok
+docker compose logs -f ngrok-tts
 ```
 
-Recrear contenedores:
+Recrear servicios:
 
 ```bash
 docker compose up -d --build --force-recreate
 ```
 
-## 7. Notas para Orange Pi 4 Pro
+## 8) Pruebas rápidas para TTS
 
-- Usa un sistema operativo de 64 bits.
-- Es mejor instalar Docker y Docker Compose Plugin directamente en la Orange Pi.
+Probar endpoint de audio por QR (local):
+
+```bash
+curl "http://IP_O_HOST:8010/tts/by-qr/condor-001?key=TU_TTS_API_KEY"
+```
+
+Probar resolución de frame (POST binario JPEG):
+
+```bash
+curl -X POST "http://IP_O_HOST:8010/qr/resolve-frame?key=TU_TTS_API_KEY" \
+  --data-binary "@frame.jpg" \
+  -H "Content-Type: image/jpeg"
+```
+
+## 9) Si ngrok o ngrok-tts no levantan
+
+Verifica tokens en `.env`:
+
+- `NGROK_AUTHTOKEN`
+- `NGROK_TTS_AUTHTOKEN`
+
+Reinicia solo el servicio afectado:
+
+```bash
+docker compose up -d ngrok
+docker compose up -d ngrok-tts
+```
+
+## 10) Notas para Orange Pi 4 Pro
+
+- Usa sistema operativo de 64 bits.
 - La primera construcción puede tardar varios minutos.
-- Si la RAM o la temperatura te dan problemas, reduce workers en `.env`:
+- Si hay presión de RAM/CPU, reduce workers en `.env`:
 
 ```env
 GUNICORN_WORKERS=1
 GUNICORN_THREADS=2
-```
-
-## 8. Si ngrok no levanta
-
-Revisa que `NGROK_AUTHTOKEN` esté correcto en `.env`.
-
-Luego reinicia solo ngrok:
-
-```bash
-docker compose up -d ngrok
 ```
