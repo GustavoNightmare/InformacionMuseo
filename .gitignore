@@ -104,6 +104,7 @@ build/
 Thumbs.db
 ehthumbs.db
 Desktop.ini
-./debug_frames
-./cache_audio
-./prueba audio
+*./debug_frames
+*./cache_audio
+*./prueba audio
+.env
