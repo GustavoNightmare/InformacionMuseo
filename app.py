@@ -2,6 +2,7 @@ from rag import build_structured_context
 from llm import LLMClient
 from models import db, User, Species, MuseumDoc, Visit, ChatTurn, QRStyle
 import docx
+import json
 from PyPDF2 import PdfReader
 from sqlalchemy import or_, text
 from io import BytesIO
@@ -84,12 +85,57 @@ def species_context_for_comparison(item: Species) -> str:
     ])
 
 
+def get_species_pair_for_comparison(
+    raw_qr_a: str | None,
+    raw_qr_b: str | None,
+) -> tuple[Species | None, Species | None, bool, bool, str | None]:
+    qr_a = sanitize_id(raw_qr_a or "")
+    qr_b = sanitize_id(raw_qr_b or "")
+
+    if not qr_a or not qr_b or not ID_RE.match(qr_a) or not ID_RE.match(qr_b):
+        return None, None, False, False, "Selecciona dos especies validas para comparar."
+
+    if qr_a == qr_b:
+        return None, None, False, False, "Debes seleccionar dos especies diferentes."
+
+    item_a = Species.query.filter_by(qr_id=qr_a).first()
+    item_b = Species.query.filter_by(qr_id=qr_b).first()
+
+    if not item_a or not item_b:
+        return None, None, False, False, "No se encontraron ambas especies para comparar."
+
+    related, same_family, same_order = species_are_related(item_a, item_b)
+    if not related:
+        return item_a, item_b, same_family, same_order, "Solo puedes comparar especies de la misma familia u orden."
+
+    return item_a, item_b, same_family, same_order, None
+
+
+def build_species_comparison_rows(a: Species, b: Species) -> list[dict[str, str]]:
+    return [
+        {"label": "ID QR", "a": a.qr_id, "b": b.qr_id},
+        {"label": "Nombre comun", "a": a.nombre_comun or "-", "b": b.nombre_comun or "-"},
+        {"label": "Nombre cientifico", "a": a.nombre_cientifico or "-", "b": b.nombre_cientifico or "-"},
+        {"label": "Familia", "a": a.familia or "-", "b": b.familia or "-"},
+        {"label": "Orden", "a": a.orden or "-", "b": b.orden or "-"},
+        {"label": "Habitat", "a": a.habitat or "-", "b": b.habitat or "-"},
+        {"label": "Dieta", "a": a.dieta or "-", "b": b.dieta or "-"},
+        {"label": "Zonas", "a": a.zonas or "-", "b": b.zonas or "-"},
+        {"label": "Descripcion", "a": a.descripcion or "-", "b": b.descripcion or "-"},
+        {
+            "label": "Curiosidades",
+            "a": "; ".join(a.curiosidades) if a.curiosidades else "-",
+            "b": "; ".join(b.curiosidades) if b.curiosidades else "-",
+        },
+    ]
+
+
 def build_basic_comparison_fallback(
     a: Species,
     b: Species,
     same_family: bool,
     same_order: bool,
-) -> str:
+) -> dict[str, object]:
     relation_parts = []
     if same_family:
         relation_parts.append(f"misma familia ({a.familia})")
@@ -125,30 +171,125 @@ def build_basic_comparison_fallback(
                 f"{b.nombre_comun} -> {b_text or 'sin dato'}."
             )
 
-    lines = [
-        "No se pudo generar el análisis avanzado con Ollama en este momento.",
-        f"Relación entre especies: {relation_text}.",
-        "",
-        "Diferencias clave:",
+    difference_items = [
+        {"title": label, "detail": detail}
+        for label, detail in [
+            (
+                entry.split(":", 1)[0].strip(),
+                entry.split(":", 1)[1].strip() if ":" in entry else entry.strip(),
+            )
+            for entry in diferencias
+        ]
+        if detail
     ]
-    if diferencias:
-        lines.extend([f"- {d}" for d in diferencias])
-    else:
-        lines.append("- No hay suficientes datos distintos para destacar diferencias claras.")
+    if not difference_items:
+        difference_items = [{
+            "title": "Diferencias disponibles",
+            "detail": "No hay suficientes datos distintos para destacar diferencias claras.",
+        }]
 
-    lines.append("")
-    lines.append("Similitudes clave:")
-    if similitudes:
-        lines.extend([f"- {s}" for s in similitudes])
-    else:
-        lines.append("- No hay suficientes datos para confirmar similitudes fuertes.")
+    similarity_items = [
+        {
+            "title": f"Similitud {index}",
+            "detail": detail,
+        }
+        for index, detail in enumerate(similitudes, start=1)
+        if detail
+    ]
+    if not similarity_items:
+        similarity_items = [{
+            "title": "Similitudes disponibles",
+            "detail": "No hay suficientes datos para confirmar similitudes fuertes.",
+        }]
 
-    lines.extend([
-        "",
-        "Nota: para un análisis de morfología y evolución más preciso, se requiere"
-        " información adicional en la ficha o documentos del museo.",
-    ])
-    return "\n".join(lines)
+    return {
+        "differences": difference_items[:6],
+        "similarities": similarity_items[:4],
+        "adaptation_explanation": (
+            f"Con la informacion disponible, ambas especies muestran una relacion de {relation_text}. "
+            "Para profundizar en diferencias de morfologia y adaptacion se requieren mas datos en la ficha o documentos del museo."
+        ),
+        "visitor_message": (
+            f"Explora como {a.nombre_comun or 'la especie A'} y {b.nombre_comun or 'la especie B'} "
+            "comparten rasgos de su linaje, pero responden de manera distinta a su entorno."
+        ),
+    }
+
+
+def normalize_comparison_analysis_items(
+    raw_items: object,
+    fallback_title_prefix: str,
+) -> list[dict[str, str]]:
+    items: list[dict[str, str]] = []
+    if not isinstance(raw_items, list):
+        return items
+
+    for index, item in enumerate(raw_items, start=1):
+        title = ""
+        detail = ""
+
+        if isinstance(item, dict):
+            title = str(item.get("title") or item.get("label") or "").strip()
+            detail = str(
+                item.get("detail")
+                or item.get("description")
+                or item.get("text")
+                or ""
+            ).strip()
+        elif isinstance(item, str):
+            detail = item.strip()
+
+        if not detail:
+            continue
+
+        items.append({
+            "title": title or f"{fallback_title_prefix} {index}",
+            "detail": detail,
+        })
+
+    return items
+
+
+def parse_species_comparison_analysis(
+    raw_answer: str,
+    a: Species,
+    b: Species,
+    same_family: bool,
+    same_order: bool,
+) -> dict[str, object] | None:
+    answer = (raw_answer or "").strip()
+    if not answer:
+        return None
+
+    fenced_match = re.search(r"```(?:json)?\s*(.*?)```", answer, re.DOTALL)
+    if fenced_match:
+        answer = fenced_match.group(1).strip()
+
+    start = answer.find("{")
+    end = answer.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    try:
+        payload = json.loads(answer[start:end + 1])
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(payload, dict):
+        return None
+
+    fallback_payload = build_basic_comparison_fallback(a, b, same_family, same_order)
+    differences = normalize_comparison_analysis_items(payload.get("differences"), "Diferencia")
+    similarities = normalize_comparison_analysis_items(payload.get("similarities"), "Similitud")
+    adaptation_explanation = str(payload.get("adaptation_explanation") or "").strip()
+    visitor_message = str(payload.get("visitor_message") or "").strip()
+
+    return {
+        "differences": differences[:6] or fallback_payload["differences"],
+        "similarities": similarities[:4] or fallback_payload["similarities"],
+        "adaptation_explanation": adaptation_explanation or fallback_payload["adaptation_explanation"],
+        "visitor_message": visitor_message or fallback_payload["visitor_message"],
+    }
 
 
 def generate_species_comparison_analysis(
@@ -156,7 +297,7 @@ def generate_species_comparison_analysis(
     b: Species,
     same_family: bool,
     same_order: bool,
-) -> tuple[str, bool]:
+) -> tuple[dict[str, object], bool]:
     relation_bits = []
     if same_family:
         relation_bits.append(f"misma familia ({a.familia})")
@@ -168,17 +309,25 @@ def generate_species_comparison_analysis(
         "Eres un guia de museo especializado en biodiversidad. "
         "Responde en espanol claro para publico general. "
         "Compara dos especies usando SOLO los datos proporcionados. "
-        "Si un dato no esta disponible, dilo explicitamente y evita inventar informacion."
+        "Si un dato no esta disponible, dilo explicitamente y evita inventar informacion. "
+        "Devuelve EXCLUSIVAMENTE JSON valido, sin markdown ni texto extra."
     )
     user_prompt = (
         "Compara estas dos especies emparentadas.\n"
         f"Relacion taxonomica: {relation}.\n\n"
-        "Entrega:\n"
-        "1) 4-6 diferencias puntuales.\n"
-        "2) 2-4 similitudes relevantes.\n"
-        "3) Explicacion corta sobre posibles diferencias de morfologia y adaptacion/evolucion, "
-        "siempre basada en la informacion disponible.\n"
-        "4) Cierre breve para visitantes del museo.\n\n"
+        "Devuelve un objeto JSON con esta estructura exacta:\n"
+        "{\n"
+        '  "differences": [{"title": "", "detail": ""}],\n'
+        '  "similarities": [{"title": "", "detail": ""}],\n'
+        '  "adaptation_explanation": "",\n'
+        '  "visitor_message": ""\n'
+        "}\n\n"
+        "Reglas:\n"
+        "- differences: 4 a 6 elementos, cada uno con una diferencia puntual y visualmente clara.\n"
+        "- similarities: 2 a 4 elementos.\n"
+        "- adaptation_explanation: un parrafo corto sobre morfologia y adaptacion, siempre basada en la informacion disponible.\n"
+        "- visitor_message: un cierre breve y atractivo para visitantes del museo.\n"
+        "- Si falta un dato, indicalo dentro del detail correspondiente.\n\n"
         "Especie A:\n"
         f"{species_context_for_comparison(a)}\n\n"
         "Especie B:\n"
@@ -190,8 +339,9 @@ def generate_species_comparison_analysis(
             {"role": "system", "content": system},
             {"role": "user", "content": user_prompt},
         ]).strip()
-        if answer:
-            return answer, True
+        parsed_answer = parse_species_comparison_analysis(answer, a, b, same_family, same_order)
+        if parsed_answer:
+            return parsed_answer, True
     except Exception:
         pass
 
@@ -1182,52 +1332,16 @@ def especies():
 
 @app.get("/especies/comparar")
 def especies_compare():
-    qr_a = sanitize_id(request.args.get("a") or "")
-    qr_b = sanitize_id(request.args.get("b") or "")
-
-    if not qr_a or not qr_b or not ID_RE.match(qr_a) or not ID_RE.match(qr_b):
-        flash("Selecciona dos especies validas para comparar.", "error")
-        return redirect(url_for("especies"))
-
-    if qr_a == qr_b:
-        flash("Debes seleccionar dos especies diferentes.", "error")
-        return redirect(url_for("especies"))
-
-    item_a = Species.query.filter_by(qr_id=qr_a).first()
-    item_b = Species.query.filter_by(qr_id=qr_b).first()
-
-    if not item_a or not item_b:
-        flash("No se encontraron ambas especies para comparar.", "error")
-        return redirect(url_for("especies"))
-
-    related, same_family, same_order = species_are_related(item_a, item_b)
-    if not related:
-        flash("Solo puedes comparar especies de la misma familia u orden.", "error")
-        return redirect(url_for("especies"))
-
-    analysis, analysis_from_llm = generate_species_comparison_analysis(
-        item_a,
-        item_b,
-        same_family,
-        same_order,
+    item_a, item_b, same_family, same_order, error_message = get_species_pair_for_comparison(
+        request.args.get("a"),
+        request.args.get("b"),
     )
 
-    comparison_rows = [
-        {"label": "ID QR", "a": item_a.qr_id, "b": item_b.qr_id},
-        {"label": "Nombre comun", "a": item_a.nombre_comun or "-", "b": item_b.nombre_comun or "-"},
-        {"label": "Nombre cientifico", "a": item_a.nombre_cientifico or "-", "b": item_b.nombre_cientifico or "-"},
-        {"label": "Familia", "a": item_a.familia or "-", "b": item_b.familia or "-"},
-        {"label": "Orden", "a": item_a.orden or "-", "b": item_b.orden or "-"},
-        {"label": "Habitat", "a": item_a.habitat or "-", "b": item_b.habitat or "-"},
-        {"label": "Dieta", "a": item_a.dieta or "-", "b": item_b.dieta or "-"},
-        {"label": "Zonas", "a": item_a.zonas or "-", "b": item_b.zonas or "-"},
-        {"label": "Descripcion", "a": item_a.descripcion or "-", "b": item_b.descripcion or "-"},
-        {
-            "label": "Curiosidades",
-            "a": "; ".join(item_a.curiosidades) if item_a.curiosidades else "-",
-            "b": "; ".join(item_b.curiosidades) if item_b.curiosidades else "-",
-        },
-    ]
+    if error_message or not item_a or not item_b:
+        flash(error_message or "No se pudo preparar la comparacion.", "error")
+        return redirect(url_for("especies"))
+
+    comparison_rows = build_species_comparison_rows(item_a, item_b)
 
     return render_template(
         "especies_compare.html",
@@ -1236,9 +1350,31 @@ def especies_compare():
         same_family=same_family,
         same_order=same_order,
         comparison_rows=comparison_rows,
-        analysis=analysis,
-        analysis_from_llm=analysis_from_llm,
     )
+
+
+@app.get("/api/especies/comparar/analysis")
+def api_species_compare_analysis():
+    item_a, item_b, same_family, same_order, error_message = get_species_pair_for_comparison(
+        request.args.get("a"),
+        request.args.get("b"),
+    )
+
+    if error_message or not item_a or not item_b:
+        return jsonify({"ok": False, "error": error_message or "comparison_invalid"}), 400
+
+    analysis, analysis_from_llm = generate_species_comparison_analysis(
+        item_a,
+        item_b,
+        same_family,
+        same_order,
+    )
+
+    return jsonify({
+        "ok": True,
+        "analysis": analysis,
+        "analysis_from_llm": analysis_from_llm,
+    })
 # -------------------------
 
 
