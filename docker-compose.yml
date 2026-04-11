@@ -11,6 +11,7 @@ services:
       OLLAMA_BASE_URL: http://ollama:11434
       OLLAMA_CHAT_URL: http://ollama:11434/api/chat
       OLLAMA_EMBED_URL: http://ollama:11434/api/embed
+      MUSEO_TTS_INTERNAL_BASE_URL: http://servertts:8010
     ports:
       - "5000:5000"
     volumes:

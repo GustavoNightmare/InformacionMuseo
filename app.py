@@ -1,4 +1,4 @@
-from rag import build_structured_context
+from rag import build_structured_context, classify_question_scope
 from llm import LLMClient
 from models import db, User, Species, MuseumDoc, Visit, ChatTurn, QRStyle
 import docx
@@ -10,6 +10,7 @@ from PIL import Image, ImageColor, ImageDraw, ImageFont
 import qrcode
 from qrcode.image.styledpil import StyledPilImage
 from qrcode.image.styles.colormasks import SolidFillColorMask
+from vector_store import VectorStore
 try:
     from qrcode.image.styles.moduledrawers.pil import (
         SquareModuleDrawer, RoundedModuleDrawer, CircleModuleDrawer, GappedSquareModuleDrawer,
@@ -40,7 +41,67 @@ ALLOWED_IMAGES = {"jpg", "jpeg", "png", "webp"}
 
 UPLOAD_DIR = os.path.join("static", "uploads")
 
+MUSEO_TTS_INTERNAL_BASE_URL = (
+    os.getenv("MUSEO_TTS_INTERNAL_BASE_URL")
+    or os.getenv("MUSEO_TTS_PUBLIC_BASE_URL")
+    or ""
+).rstrip("/")
 
+
+def build_species_tts_payload(species: Species) -> dict:
+    return {
+        "species_id": species.id,
+        "qr_id": species.qr_id or species.id,
+        "common_name": species.nombre_comun or "",
+        "scientific_name": species.nombre_cientifico or "",
+        "description": species.descripcion or "",
+        "habitat": species.habitat or "",
+        "diet": species.dieta or "",
+        "curiosities": species.curiosidades or [],
+    }
+
+
+def sync_species_to_tts(species: Species) -> None:
+    if not MUSEO_TTS_INTERNAL_BASE_URL:
+        return
+
+    shared_key = (os.getenv("MUSEO_TTS_SHARED_KEY") or "").strip()
+    if not shared_key:
+        raise RuntimeError("MUSEO_TTS_SHARED_KEY no está configurado")
+
+    url = f"{MUSEO_TTS_INTERNAL_BASE_URL}/internal/species/sync"
+    response = requests.post(
+        url,
+        json=build_species_tts_payload(species),
+        headers={"X-API-Key": shared_key},
+        timeout=180,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"TTS sync HTTP {response.status_code}: {response.text[:300]}")
+
+
+def delete_species_from_tts(species_id: str, qr_id: str | None = None) -> None:
+    if not MUSEO_TTS_INTERNAL_BASE_URL:
+        return
+
+    shared_key = (os.getenv("MUSEO_TTS_SHARED_KEY") or "").strip()
+    if not shared_key:
+        raise RuntimeError("MUSEO_TTS_SHARED_KEY no está configurado")
+
+    payload = {"species_id": species_id}
+    if qr_id:
+        payload["qr_id"] = qr_id
+
+    url = f"{MUSEO_TTS_INTERNAL_BASE_URL}/internal/species/delete"
+    response = requests.post(
+        url,
+        json=payload,
+        headers={"X-API-Key": shared_key},
+        timeout=60,
+    )
+    if response.status_code >= 400:
+        raise RuntimeError(f"TTS delete HTTP {response.status_code}: {response.text[:300]}")
+    
 def sanitize_id(raw: str) -> str:
     if raw is None:
         return ""
@@ -909,11 +970,11 @@ db.init_app(app)
 login_manager = LoginManager()
 login_manager.login_view = "login"
 login_manager.init_app(app)
-
 llm = LLMClient()
 with app.app_context():
     db.create_all()
     ensure_schema_updates()
+
 # Lazy init VectorStore (evita ruido en CLI)
 _VS = None
 
@@ -921,9 +982,51 @@ _VS = None
 def get_vs():
     global _VS
     if _VS is None:
-        from vector_store import VectorStore
         _VS = VectorStore()
     return _VS
+
+
+def format_museum_rag_context(chunks: list[dict]) -> str:
+    if not chunks:
+        return (
+            "FRAGMENTOS RELEVANTES DEL MUSEO (RAG): "
+            "No hay información específica del museo suficientemente relevante."
+        )
+
+    lines = []
+    for idx, chunk in enumerate(chunks, start=1):
+        meta = chunk.get("meta") or {}
+        source_label = meta.get("source_label") or meta.get("source") or "museo"
+        lines.append(f"[{idx}] Fuente: {source_label}\n{chunk['text']}")
+    return "FRAGMENTOS RELEVANTES DEL MUSEO (RAG):\n" + "\n\n".join(lines)
+
+
+def build_chat_scope_rules(question_scope: str) -> str:
+    base = [
+        "Solo puedes responder sobre el animal actual del museo y, cuando exista, sobre el ejemplar o pieza exhibida.",
+        "Si el usuario pide algo fuera de ese alcance, responde brevemente que solo puedes ayudar con este animal del museo.",
+        "No inventes datos.",
+    ]
+
+    if question_scope == "specimen":
+        base.extend([
+            "La pregunta fue detectada como específica del espécimen/ejemplar expuesto.",
+            "Usa primero y por encima de todo los fragmentos del museo.",
+            "NO deduzcas procedencia, localidad de hallazgo, colección, fecha o historia del ejemplar a partir de la distribución general de la especie, su hábitat o su dieta.",
+            "Si el contexto del museo no trae ese dato puntual, dilo claramente: el museo no especifica ese dato del ejemplar exhibido.",
+        ])
+    elif question_scope == "general":
+        base.extend([
+            "La pregunta fue detectada como general sobre la especie.",
+            "Puedes usar la ficha estructurada y complementar con fragmentos del museo, pero siempre limita la respuesta al animal actual de la ficha.",
+        ])
+    else:
+        base.extend([
+            "La pregunta puede mezclar datos generales y datos del museo.",
+            "Si aparece una posible ambigüedad entre especie general y ejemplar exhibido, prioriza el dato del museo y aclara la diferencia.",
+        ])
+
+    return "\n".join(base)
 
 
 def get_chat_history(user_id: int, species_id: str, limit: int = 8):
@@ -978,67 +1081,17 @@ def logout_view():
 
 @app.post("/api/chat_stream")
 def api_chat_stream():
-    import requests
-    import urllib.parse
-
-    # 1) exigir login (para memoria individual)
     if not current_user.is_authenticated:
-        return Response("LOGIN_REQUIRED", status=401, mimetype="text/plain")
-
-    def wiki_search_title(query: str) -> str:
-        if not query:
-            return ""
-        q = urllib.parse.quote(query)
-        url = (
-            "https://es.wikipedia.org/w/api.php"
-            f"?action=query&format=json&list=search&srsearch={q}&srlimit=1"
-        )
-        try:
-            r = requests.get(url, timeout=8)
-            if r.status_code != 200:
-                return ""
-            data = r.json()
-            results = data.get("query", {}).get("search", [])
-            return (results[0].get("title") or "").strip() if results else ""
-        except Exception:
-            return ""
-
-    def wiki_extract(title: str, max_chars: int = 2500) -> str:
-        if not title:
-            return ""
-        t = urllib.parse.quote(title)
-        url = (
-            "https://es.wikipedia.org/w/api.php"
-            f"?action=query&format=json&prop=extracts&explaintext=1&redirects=1&titles={t}"
-        )
-        try:
-            r = requests.get(url, timeout=8)
-            if r.status_code != 200:
-                return ""
-            data = r.json()
-            pages = data.get("query", {}).get("pages", {})
-            if not pages:
-                return ""
-            page = next(iter(pages.values()))
-            text = (page.get("extract") or "").strip()
-            return text[:max_chars].strip() if text else ""
-        except Exception:
-            return ""
+        return Response("ERROR: login requerido", status=401, mimetype="text/plain")
 
     def last_pair(history: list[dict]) -> tuple[str, str]:
-        """
-        Devuelve (ultima_pregunta_usuario, ultima_respuesta_asistente) del historial.
-        Si no hay, retorna ("","").
-        """
         if not history:
             return "", ""
-        # buscamos desde el final: assistant y el user previo
         last_assistant = ""
         last_user = ""
         for i in range(len(history) - 1, -1, -1):
             if history[i]["role"] == "assistant" and not last_assistant:
                 last_assistant = history[i]["content"]
-                # seguimos buscando user anterior
                 continue
             if last_assistant and history[i]["role"] == "user":
                 last_user = history[i]["content"]
@@ -1058,21 +1111,25 @@ def api_chat_stream():
     if not sp:
         return Response("ERROR: Especie no encontrada", status=404, mimetype="text/plain")
 
-    # -------- Memoria (historial): tomamos SOLO el último par --------
+    question_scope = classify_question_scope(user_msg)
+    nl = chr(10)
+
     hist = get_chat_history(current_user.id, species_id, limit=10)
     prev_q, prev_a = last_pair(hist)
 
     memory_note = ""
     if prev_q and prev_a:
         memory_note = (
-            "Contexto de conversación previa (para referencias como '¿por qué?' / '¿cómo así?'):\n"
-            f"- Pregunta anterior del usuario: {prev_q}\n"
-            f"- Tu respuesta anterior: {prev_a}\n\n"
-            "Regla: NO repitas la respuesta anterior completa. "
-            "Responde SOLO a la pregunta NUEVA del usuario, usando la respuesta anterior solo como referencia breve."
+            "Contexto de conversación previa (solo para resolver referencias cortas como '¿por qué?' o '¿cómo así?'):"
+            + nl
+            + f"- Pregunta anterior del usuario: {prev_q}"
+            + nl
+            + f"- Tu respuesta anterior: {prev_a}"
+            + nl
+            + nl
+            + "Regla: responde solo a la nueva pregunta y no repitas completa la respuesta anterior."
         )
 
-    # -------- Recorrido (últimas escaneadas) --------
     tour_note = ""
     last = (db.session.query(Visit, Species)
             .join(Species, Species.id == Visit.species_id)
@@ -1091,72 +1148,47 @@ def api_chat_stream():
             if current_family and s.id != sp.id and (s.familia or "").strip().lower() == current_family:
                 same_family.append(f"{s.nombre_comun} ({s.id})")
 
-        tour_note = "Recorrido reciente del usuario:\n" + "\n".join(lines)
+        tour_note = "Recorrido reciente del usuario:" + nl + nl.join(lines)
         if same_family:
-            tour_note += "\n\nRelación:\n" + \
-                f"Esta especie comparte familia ({sp.familia}) con: " + \
-                ", ".join(same_family) + "."
+            tour_note += (
+                nl + nl + "Relación:" + nl
+                + f"Esta especie comparte familia ({sp.familia}) con: "
+                + ", ".join(same_family)
+                + "."
+            )
 
-    structured = build_structured_context(current_user.id, sp)
+    structured = build_structured_context(current_user.id, sp, question_scope=question_scope)
 
-    # -------- 1) RAG --------
     try:
-        chunks = get_vs().query_species(species_id, user_msg, k=4)
+        chunks = get_vs().query_species(
+            species_id,
+            user_msg,
+            k=5,
+            question_scope=question_scope,
+        )
     except Exception:
         chunks = []
 
-    rag_context = ""
-    if chunks:
-        rag_context = "Fragmentos del museo (RAG):\n" + \
-            "\n\n".join([f"- {c['text']}" for c in chunks])
-    else:
-        rag_context = "Fragmentos del museo (RAG): No hay información del museo indexada o relevante."
+    rag_context = format_museum_rag_context(chunks)
 
-    # -------- 2) Web fallback SOLO si NO hay chunks --------
-    wiki_text = ""
-    wiki_url = ""
-    if len(chunks) == 0:
-        candidates = []
-        if (sp.nombre_cientifico or "").strip():
-            candidates.append(sp.nombre_cientifico.strip())
-        if (sp.nombre_comun or "").strip():
-            candidates.append(sp.nombre_comun.strip())
-            candidates.append(sp.nombre_comun.strip() + " andino")
-
-        title = ""
-        for cand in candidates:
-            title = wiki_search_title(cand)
-            if title:
-                break
-
-        if title:
-            wiki_text = wiki_extract(title)
-            wiki_url = "https://es.wikipedia.org/wiki/" + \
-                urllib.parse.quote(title.replace(" ", "_"))
-
-    # -------- System prompt (clave para evitar duplicar) --------
-    system = (
-        "Eres un guía del museo. Responde en español, claro y amable.\n"
-        "Responde SOLO a la ÚLTIMA pregunta del usuario.\n"
-        "Si es una pregunta de seguimiento (por qué / cómo / entonces / como cuáles), "
-        "NO repitas la respuesta anterior completa: responde directo al punto.\n"
-        "NO hagas preguntas ni sugieras preguntas.\n"
-        "Si el usuario pide ejemplos ('¿como cuáles?'), da 3–5 ejemplos concretos.\n"
-        "Si usas Wikipedia, añade al final EXACTAMENTE:\n"
-        "Fuente externa: Wikipedia (puede contener errores) — <URL>\n"
-        "No inventes datos."
-    )
+    system = nl.join([
+        "Eres un guía del museo. Responde en español, claro y amable.",
+        "Responde SOLO a la última pregunta del usuario.",
+        "NO hagas preguntas de vuelta ni sugieras nuevas preguntas.",
+        "Si el usuario pide ejemplos, da 3 a 5 ejemplos concretos cuando el contexto sí los permita.",
+        build_chat_scope_rules(question_scope),
+    ])
 
     full_context = (
-        "Ficha (BD):\n" + structured + "\n\n" +
-        (memory_note + "\n\n" if memory_note else "") +
-        (tour_note + "\n\n" if tour_note else "") +
-        rag_context +
-        (("\n\nTexto Wikipedia:\n" + wiki_text +
-         "\n\nURL: " + wiki_url) if wiki_text else "")
+        f"Tipo de pregunta detectado: {question_scope}."
+        + nl + nl
+        + "Ficha (BD):" + nl
+        + structured + nl + nl
+        + (memory_note + nl + nl if memory_note else "")
+        + (tour_note + nl + nl if tour_note else "")
+        + rag_context
     )
 
-    # ✅ IMPORTANTÍSIMO: NO metemos todo el historial crudo (eso causaba la repetición)
     messages = [
         {"role": "system", "content": system},
         {"role": "system", "content": full_context},
@@ -1170,21 +1202,17 @@ def api_chat_stream():
                 full_answer += chunk
                 yield chunk
 
-            # si usó wiki y el modelo olvidó la línea final, la pegamos
-            if wiki_text and wiki_url and ("Fuente externa: Wikipedia" not in full_answer):
-                full_answer = full_answer.rstrip(
-                ) + f"\n\nFuente externa: Wikipedia (puede contener errores) — {wiki_url}"
-
-            save_chat_turns(current_user.id, species_id,
-                            user_msg, full_answer.strip(), keep_last=60)
-
+            save_chat_turns(
+                current_user.id,
+                species_id,
+                user_msg,
+                full_answer.strip(),
+                keep_last=60,
+            )
         except Exception as e:
-            yield f"\n\n[ERROR] {e}"
+            yield f"{nl}{nl}[ERROR] {e}"
 
     return Response(stream_with_context(generate()), mimetype="text/plain; charset=utf-8")
-# --------- ROUTES ---------
-
-
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -1269,17 +1297,6 @@ def register_post():
     flash("Cuenta creada correctamente ✅", "ok")
     return redirect(url_for("index"))
 # --------------------------------------historial--------------
-
-
-def get_chat_history(user_id: int, species_id: str, limit: int = 8):
-    # últimos turnos (user+assistant), ordenados del más viejo al más nuevo
-    turns = (ChatTurn.query
-             .filter_by(user_id=user_id, species_id=species_id)
-             .order_by(ChatTurn.created_at.desc())
-             .limit(limit)
-             .all())
-    turns = list(reversed(turns))
-    return [{"role": t.role, "content": t.content} for t in turns]
 
 
 def save_turn(user_id: int, species_id: str, role: str, content: str):
@@ -1550,6 +1567,10 @@ def admin_species_new_post():
         get_vs().reindex_species(sp.id, sp.museo_info)
     except Exception as e:
         flash(f"Guardado OK, pero falló indexación RAG: {e}", "error")
+    try:
+        sync_species_to_tts(sp)
+    except Exception as e:
+        flash(f"Guardado OK, pero falló generación de audio TTS: {e}", "error")
 
     return redirect(url_for("admin_species_list"))
 
@@ -1608,6 +1629,8 @@ def admin_species_edit_post(species_id):
         flash(str(ve), "error")
         return redirect(url_for("admin_species_edit", species_id=item.id))
 
+    
+
     db.session.commit()
 
     try:
@@ -1615,8 +1638,12 @@ def admin_species_edit_post(species_id):
     except Exception as e:
         flash(f"Editado OK, pero falló indexación RAG: {e}", "error")
 
-    return redirect(url_for("admin_species_list"))
+    try:
+        sync_species_to_tts(item)
+    except Exception as e:
+        flash(f"Editado OK, pero falló generación de audio TTS: {e}", "error")
 
+    return redirect(url_for("admin_species_list"))
 
 @app.post("/admin/especies/<species_id>/eliminar")
 @login_required
@@ -1627,12 +1654,19 @@ def admin_species_delete(species_id):
     if not item:
         abort(404)
 
+    old_qr_id = item.qr_id
+
     MuseumDoc.query.filter_by(species_id=item.id).delete()
     db.session.delete(item)
     db.session.commit()
 
     try:
         get_vs().reindex_species(sid, "")
+    except Exception:
+        pass
+
+    try:
+        delete_species_from_tts(sid, old_qr_id)
     except Exception:
         pass
 
@@ -1725,7 +1759,28 @@ def admin_qr_customize(species_id):
         has_custom_style=style_obj is not None,
     )
 
+@app.cli.command("reindex-all")
+def reindex_all():
+    with app.app_context():
+        db.create_all()
+        ensure_schema_updates()
+        items = Species.query.order_by(Species.nombre_comun.asc()).all()
+        total = len(items)
+        ok = 0
+        failed: list[str] = []
 
+        for item in items:
+            try:
+                get_vs().reindex_species(item.id, item.museo_info or "")
+                ok += 1
+            except Exception as exc:
+                failed.append(f"{item.id}: {exc}")
+
+    print(f"✅ Reindexadas {ok}/{total} especies")
+    if failed:
+        print("⚠️ Fallaron estas especies:")
+        for line in failed:
+            print(f" - {line}")
 @app.post("/admin/qr/<species_id>/personalizar")
 @login_required
 def admin_qr_customize_post(species_id):
@@ -1766,6 +1821,10 @@ def admin_qr_customize_post(species_id):
     style_obj.border = data["border"]
 
     db.session.commit()
+    try:
+        sync_species_to_tts(item)
+    except Exception as e:
+        flash(f"QR guardado, pero falló actualización de audio TTS: {e}", "error")
     flash("QR personalizado guardado.", "ok")
     return redirect(url_for("admin_qr_customize", species_id=item.id))
 
@@ -1829,30 +1888,6 @@ def admin_qr_image(species_id, fmt):
 # --------- CHAT API (RAG) ---------
 
 
-@app.get("/api/public/species/<string:qr_id>/tts")
-def get_species_for_tts(qr_id):
-    expected_api_key = (os.getenv("MUSEO_TTS_SHARED_KEY") or "").strip()
-    provided_api_key = (request.headers.get("X-API-Key") or "").strip()
-    if not expected_api_key or provided_api_key != expected_api_key:
-        return jsonify({"error": "unauthorized"}), 401
-
-    normalized_qr_id = sanitize_id(qr_id)
-    if not normalized_qr_id or not ID_RE.match(normalized_qr_id):
-        return jsonify({"error": "species_not_found"}), 404
-
-    item = Species.query.filter_by(qr_id=normalized_qr_id).first()
-    if not item:
-        return jsonify({"error": "species_not_found"}), 404
-
-    return jsonify({
-        "common_name": item.nombre_comun,
-        "scientific_name": item.nombre_cientifico,
-        "description": item.descripcion,
-        "habitat": item.habitat,
-        "diet": item.dieta,
-        "curiosities": item.curiosidades,
-    }), 200
-
 
 @app.post("/api/chat")
 def api_chat():
@@ -1869,28 +1904,33 @@ def api_chat():
     if not sp:
         return jsonify({"ok": False, "error": "Especie no encontrada"}), 404
 
+    question_scope = classify_question_scope(user_msg)
     user_id = current_user.id if current_user.is_authenticated else None
-    structured = build_structured_context(user_id, sp)
+    nl = chr(10)
+    structured = build_structured_context(user_id, sp, question_scope=question_scope)
 
     try:
-        chunks = get_vs().query_species(species_id, user_msg, k=4)
-    except Exception as e:
+        chunks = get_vs().query_species(
+            species_id,
+            user_msg,
+            k=5,
+            question_scope=question_scope,
+        )
+    except Exception:
         chunks = []
-    if chunks:
-        museum_context = "FRAGMENTOS RELEVANTES DEL MUSEO (RAG):\n" + "\n\n".join([
-            f"- {c['text']}" for c in chunks])
-    else:
-        museum_context = "FRAGMENTOS RELEVANTES DEL MUSEO (RAG): No hay info indexada o no se pudo extraer."
 
-    system = (
-        "Eres un guía del museo. Responde en español, claro y amable. "
-        "Usa SOLO el contexto proporcionado. "
-        "Si no es posible responder con el contexto, dilo y sugiere qué dato faltaría."
-    )
+    museum_context = format_museum_rag_context(chunks)
+
+    system = nl.join([
+        "Eres un guía del museo. Responde en español, claro y amable.",
+        "Usa SOLO el contexto proporcionado.",
+        "Si no es posible responder con el contexto, dilo claramente e indica qué dato del museo faltaría.",
+        build_chat_scope_rules(question_scope),
+    ])
 
     messages = [
         {"role": "system", "content": system},
-        {"role": "system", "content": structured},
+        {"role": "system", "content": f"Tipo de pregunta detectado: {question_scope}." + nl + nl + structured},
         {"role": "system", "content": museum_context},
         {"role": "user", "content": user_msg},
     ]
@@ -1900,7 +1940,6 @@ def api_chat():
         return jsonify({"ok": True, "answer": answer})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
-
 # --------- ERRORS ---------
 
 

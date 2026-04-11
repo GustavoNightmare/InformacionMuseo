@@ -147,11 +147,15 @@
     </div>
 
     <div>
-      <div class="text-xs text-slate-500 mb-1">Datos del museo (RAG)</div>
-      <textarea name="museo_info" rows="6"
-        class="w-full rounded-2xl border border-slate-200 px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200"
-        placeholder="Curatoría, historia local, observaciones, etc.">{{ item.museo_info if item else '' }}</textarea>
-    </div>
+  <div class="text-xs text-slate-500 mb-1">Datos del museo (RAG)</div>
+  <div class="mb-2 rounded-2xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+    Empieza por datos del ejemplar exhibido: procedencia, sitio de hallazgo o recolección, fecha, sala,
+    colección, donación, contexto local o mediación. Luego, si quieres, agrega información general de la especie.
+  </div>
+  <textarea name="museo_info" rows="6"
+    class="w-full rounded-2xl border border-slate-200 px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200"
+    placeholder="Ejemplar exhibido: encontrado en... / procedencia... / colección... / contexto curatorial...">{{ item.museo_info if item else '' }}</textarea>
+</div>
 
     <div>
       <div class="text-xs text-slate-500 mb-1">Subir documentos del museo (PDF/DOCX/TXT)</div>
