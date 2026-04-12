@@ -21,6 +21,14 @@ from pydantic import BaseModel
 BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 
+
+def resolve_storage_dir(raw_path: str, default_name: str) -> str:
+    raw = (raw_path or default_name).strip()
+    path = Path(raw)
+    if not path.is_absolute():
+        path = BASE_DIR / path
+    return str(path.resolve())
+
 app = FastAPI(
     title="Museo TTS Service",
     version="2.0.0",
@@ -36,7 +44,7 @@ EDGE_TTS_VOICE = os.getenv("EDGE_TTS_VOICE", "es-CO-GonzaloNeural")
 EDGE_TTS_RATE = os.getenv("EDGE_TTS_RATE", "+0%")
 EDGE_TTS_VOLUME = os.getenv("EDGE_TTS_VOLUME", "+0%")
 
-AUDIO_CACHE_DIR = os.getenv("AUDIO_CACHE_DIR", "./cache_audio")
+AUDIO_CACHE_DIR = resolve_storage_dir(os.getenv("AUDIO_CACHE_DIR", "./cache_audio"), "cache_audio")
 Path(AUDIO_CACHE_DIR).mkdir(parents=True, exist_ok=True)
 
 AUDIO_SPECIES_DIR = os.path.join(AUDIO_CACHE_DIR, "species")
@@ -44,7 +52,7 @@ Path(AUDIO_SPECIES_DIR).mkdir(parents=True, exist_ok=True)
 
 QR_INDEX_PATH = os.path.join(AUDIO_CACHE_DIR, "_qr_index.json")
 
-DEBUG_FRAMES_DIR = os.getenv("DEBUG_FRAMES_DIR", "./debug_frames")
+DEBUG_FRAMES_DIR = resolve_storage_dir(os.getenv("DEBUG_FRAMES_DIR", "./debug_frames"), "debug_frames")
 Path(DEBUG_FRAMES_DIR).mkdir(parents=True, exist_ok=True)
 
 ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")

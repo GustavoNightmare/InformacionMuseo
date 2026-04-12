@@ -1,85 +1,89 @@
-# AGENTS.md - Guide for Agentic Contributors
-This file is for coding agents operating in this repository.
-Follow existing patterns first, then the rules below.
+# AGENTS.md - Guide for Coding Agents
+This guide is for agentic contributors working in `E:\ProyectoUniversidad\Museo\InformacionMuseo`.
+Read touched files first, follow existing patterns, and keep changes tightly scoped.
 
-## 1) Repository Snapshot
-- Main app: Flask monolith in `app.py`.
-- Data models: SQLAlchemy models in `models.py`.
-- LLM and RAG helpers: `llm.py`, `rag.py`, `vector_store.py`.
-- Views/assets: `templates/`, `static/`, `static/uploads/`.
-- Persistent data: `instance/` (SQLite), `chroma_db/` (Chroma DB).
-- Container setup: `Dockerfile`, `docker-compose.yml`, scripts in `docker/`.
-- Optional companion service: FastAPI TTS in `Servertts/app/main.py`.
-- Python target: 3.11.
+## Repository Overview
+- Main web app: Flask app in `app.py`.
+- ORM models: `models.py` with Flask-SQLAlchemy.
+- LLM/RAG helpers: `llm.py`, `rag.py`, `vector_store.py`.
+- TTS companion service: FastAPI app in `Servertts/app/main.py`.
+- Templates/assets: `templates/`, `static/`, `static/uploads/`.
+- Local data: `instance/` for SQLite, `chroma_db/` for Chroma.
+- Containers: root `Dockerfile`, `docker-compose.yml`, scripts in `docker/`.
+- Python target in containers: 3.11.
 - Dependency files: `requirements.txt`, `Servertts/requirements.txt`.
-- Never commit real secrets from `.env` files.
 
-## 2) Build and Run Commands (Flask App)
-Local setup and run:
+## Setup and Run
+Main Flask app setup:
 ```bash
 python -m venv .venv
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
-# macOS/Linux
-source .venv/bin/activate
+.venv\Scripts\activate
 pip install -r requirements.txt
+```
+Run the main app:
+```bash
 flask --app app.py run --debug --port 5000
 ```
-Alternative app entrypoint (hardcoded port 5002 in `app.py`):
+Alternative direct entrypoint:
 ```bash
 python app.py
 ```
-Flask CLI commands defined in this repo:
+`python app.py` runs the hardcoded debug server on port `5002`.
+TTS FastAPI service:
+```bash
+python -m venv .venv
+.venv\Scripts\activate
+pip install -r Servertts/requirements.txt
+uvicorn Servertts.app.main:app --reload --host 0.0.0.0 --port 8010
+```
+
+## Flask CLI Commands
+Defined in `app.py`:
 ```bash
 flask --app app.py init-db
 flask --app app.py create-admin
 flask --app app.py create-user
 flask --app app.py seed
+flask --app app.py reindex-all
 ```
+Use these instead of ad hoc DB scripts.
 
-## 3) Docker Commands
-Start all services (`museo-app`, `ollama`, `ngrok`):
+## Docker Commands
 ```bash
 docker compose up -d --build
-```
-Stop all services:
-```bash
 docker compose down
-```
-Rebuild and recreate:
-```bash
 docker compose up -d --build --force-recreate
-```
-Service logs:
-```bash
 docker compose logs -f museo-app
+docker compose logs -f servertts
 docker compose logs -f ollama
 docker compose logs -f ngrok
+docker compose logs -f ngrok-tts
 ```
 
-## 4) Lint, Format, and Type-Check
-No committed Black/Ruff/Mypy/Isort config exists right now.
-Use default behavior unless a task explicitly adds tool config.
-Install:
+## Lint, Format, and Type Checking
+No committed `pyproject.toml`, `ruff.toml`, `mypy.ini`, `setup.cfg`, or `pytest.ini` exists.
+Tooling is not enforced repo-wide, so avoid mass cleanup in unrelated files.
+Recommended install:
 ```bash
 pip install black isort ruff mypy
 ```
-Run:
+Recommended commands:
 ```bash
 black .
 isort .
 ruff check .
 mypy .
 ```
+Prefer formatting only the files you touched.
 
-## 5) Test Commands (Pytest)
-Current state: no committed `tests/` directory.
-When adding tests, use `tests/test_*.py` and `pytest`.
-Install test deps:
+## Test Commands
+There is currently no committed `tests/` directory and no existing automated suite.
+If you add tests, use `pytest` and name files `tests/test_*.py`.
+Install test tools:
 ```bash
 pip install pytest pytest-cov
 ```
-Run full suite:
+Run all tests:
 ```bash
 pytest
 pytest --cov=.
@@ -92,73 +96,82 @@ Run a single test function:
 ```bash
 pytest tests/test_example.py::test_specific_behavior
 ```
-Run filtered tests:
+Run a single test class:
+```bash
+pytest tests/test_example.py::TestChatFlow
+```
+Run matching tests only:
 ```bash
 pytest -k "chat and not slow"
 ```
+If no tests exist for your change, state that clearly in the handoff.
 
-## 6) Code Style and Engineering Rules
+## Code Style
 Imports:
-- Order imports as: standard library, third-party, local modules.
-- Keep one blank line between import groups.
-- Prefer top-level imports.
-- Use function-local imports only for lazy/optional deps.
+- Order imports as standard library, third-party, then local modules.
+- Separate groups with one blank line.
+- Avoid wildcard imports.
+- Keep imports at module top level unless a local import is needed for optional or expensive dependencies.
 
 Formatting:
-- Keep Black-compatible style (88-char target).
-- Use 4 spaces, never tabs.
-- Keep functions focused; extract helpers for long blocks.
-- Preserve local style in touched files.
+- Use 4 spaces.
+- Keep code Black-compatible and roughly 88 columns unless local style differs.
+- Prefer small helpers over deeply nested branches.
+- Match the surrounding file's quote style and spacing when editing older code.
+- Avoid reformatting unrelated Spanish text blocks, templates, or large literals.
 
 Types:
-- Add type hints for new/changed public functions.
-- Prefer built-in generics (`list[str]`, `dict[str, Any]`).
-- Prefer `X | None` over `Optional[X]` in new code.
+- Add type hints for new or changed public functions.
+- Prefer built-in generics such as `list[str]` and `dict[str, Any]`.
+- Prefer `X | None` over `Optional[X]` in modern-typed files.
+- Keep JSON-like return shapes stable for templates and API callers.
 
 Naming:
-- Variables/functions/modules: `snake_case`.
+- Functions, variables, modules: `snake_case`.
 - Classes: `PascalCase`.
 - Constants: `UPPER_SNAKE_CASE`.
+- Use descriptive route handler names like `create_user`, `edit_species`, or `chat_stream`.
+- Reuse established project terms even when they are in Spanish.
 
-Flask conventions:
-- Use explicit method decorators (`@app.get`, `@app.post`).
-- Validate request data early and fail fast.
-- Use `abort(403)` / `abort(404)` for page routes when appropriate.
-- Use `jsonify(...), status_code` for API responses.
+## Framework and Persistence Conventions
+- Prefer explicit Flask/FastAPI decorators such as `@app.get` and `@app.post`.
+- Validate request data early and fail fast on invalid input.
+- For page routes, use `abort(403)` and `abort(404)` where appropriate.
+- For JSON endpoints, return stable payloads with `jsonify` or `JSONResponse`.
+- Keep auth checks explicit with `login_required`, admin guards, and API-key validation.
+- Reuse helpers like `sanitize_id`, `ext_of`, and existing payload builders.
+- Use `db.session` consistently, group related writes, and commit once.
+- Keep schema-fix logic centralized around `ensure_schema_updates()`.
+- Do not build SQL from unsanitized user input.
+- Preserve existing species IDs and QR relationships when editing records.
 
-Database conventions:
-- Use existing SQLAlchemy ORM/session patterns.
-- Commit after grouped writes; roll back on failed validation/upload flows.
-- Keep schema update logic centralized (see `ensure_schema_updates()`).
-- Never build SQL from unsanitized user input.
-
-Error handling:
+## Error Handling, Security, and External Calls
 - Catch narrow exceptions where practical.
-- Convert network/IO/LLM boundary failures into safe user-facing errors.
-- Keep API error payloads machine-readable and consistent.
-
-Security and file handling:
-- Sanitize IDs with existing helper and regex patterns.
+- Wrap network/LLM/TTS failures with safe, useful messages.
+- Use explicit HTTP timeouts; existing `requests` code already does this.
+- Do not silently swallow exceptions unless the action is truly optional.
 - Use `secure_filename` for uploads.
-- Enforce extension allowlists (`ALLOWED_DOCS`, `ALLOWED_AUDIO`, `ALLOWED_IMAGES`).
-- Keep auth checks explicit (`login_required`, admin guards, API keys).
+- Enforce existing allowlists such as `ALLOWED_DOCS`, `ALLOWED_AUDIO`, and `ALLOWED_IMAGES`.
+- Sanitize user-provided identifiers with existing regex and helper patterns.
+- Never commit real `.env` values, API keys, or generated private data.
+- Do not log credentials, tokens, or large third-party responses containing sensitive data.
 
-Logging:
-- Prefer concise operational logs.
-- Avoid noisy logs in hot paths.
-- Do not log credentials, API keys, or sensitive payloads.
+## Testing Expectations for Agents
+- Prefer focused tests for parsing, validation, utility, or API behavior.
+- If you cannot add automated tests, perform the narrowest useful manual verification.
+- When changing routes, verify both success and failure paths.
+- When changing DB logic, verify startup commands still work.
+- When changing TTS or LLM integration, verify behavior degrades safely when services are unavailable.
 
-## 7) Cursor and Copilot Rules
-Checked for repository-level instruction files:
-- `.cursorrules`
-- `.cursor/rules/`
-- `.github/copilot-instructions.md`
-Current state: none of these files exist in this repo.
-If added later, treat them as higher-priority policy and merge into this guide.
+## Cursor and Copilot Rules
+Checked these repository-level instruction sources: `.cursorrules`, `.cursor/rules/`, `.github/copilot-instructions.md`.
+Current state: none of these files exist in this repository.
+If they are added later, treat them as higher-priority instructions and merge them with this guide.
 
-## 8) Agent Checklist Before Finishing
+## Finish Checklist
 - Read all touched files before editing.
-- Keep changes scoped; avoid unrelated refactors.
-- Run relevant format/lint/test commands when possible.
-- Update docs when behavior or commands change.
-- Add targeted tests for changed behavior when scope allows.
+- Keep diffs focused; avoid unrelated refactors.
+- Prefer existing helpers over duplicate logic.
+- Run relevant format, lint, and test commands when practical.
+- Update docs when behavior, commands, or setup change.
+- Call out missing env vars, unverified paths, and absent tests in the final handoff.

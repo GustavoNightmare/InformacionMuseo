@@ -2,6 +2,7 @@
 #  Python / virtual‑env
 # ----------------------------------------------------------------------
 .venv/
+Servertts/.venv/
 env/
 venv/
 ENV/
@@ -58,6 +59,8 @@ Servertts/cache_audio/
 Servertts/cache_audio/**          # archivos .mp3 generados
 Servertts/debug_frames/
 Servertts/debug_frames/**         # capturas de pantalla temporales
+cache_audio/
+debug_frames/
 
 # ----------------------------------------------------------------------
 #  Atajos viejos que pueden quedar sueltos accidentalmente
