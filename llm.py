@@ -50,17 +50,20 @@ class LLMClient:
 
         self.connect_timeout = float(os.getenv("OLLAMA_CONNECT_TIMEOUT", "10"))
         self.read_timeout = self._parse_read_timeout(
-            os.getenv("OLLAMA_READ_TIMEOUT", ""))
+            os.getenv("OLLAMA_READ_TIMEOUT", "")
+        )
 
         self.think = self._parse_think(
-            os.getenv("OLLAMA_THINK", "false"), self.model)
+            os.getenv("OLLAMA_THINK", "false"), self.model
+        )
 
         self.enable_fallback = self._parse_bool(
             os.getenv("OLLAMA_ENABLE_FALLBACK", "true"),
             default=True,
         )
         self.fallback_model = (
-            os.getenv("OLLAMA_FALLBACK_MODEL") or "").strip()
+            os.getenv("OLLAMA_FALLBACK_MODEL") or ""
+        ).strip()
         self.fallback_provider = (
             os.getenv("OLLAMA_FALLBACK_PROVIDER", "local") or "local"
         ).strip().lower()
@@ -104,6 +107,36 @@ class LLMClient:
                     f"- Fallback: {fallback_error}"
                 ) from fallback_error
 
+    def web_search(self, query: str, max_results: int = 5) -> list[dict]:
+        if not self.api_key:
+            raise RuntimeError(
+                "Falta OLLAMA_API_KEY para usar el buscador web de Ollama."
+            )
+
+        payload = {
+            "query": (query or "").strip(),
+            "max_results": max(1, min(int(max_results or 5), 10)),
+        }
+        if not payload["query"]:
+            return []
+
+        data = self._request_cloud_json("/api/web_search", payload)
+        results = data.get("results") if isinstance(data, dict) else []
+        return results if isinstance(results, list) else []
+
+    def web_fetch(self, url: str) -> dict:
+        if not self.api_key:
+            raise RuntimeError(
+                "Falta OLLAMA_API_KEY para usar la lectura web de Ollama."
+            )
+
+        clean_url = (url or "").strip()
+        if not clean_url:
+            return {}
+
+        data = self._request_cloud_json("/api/web_fetch", {"url": clean_url})
+        return data if isinstance(data, dict) else {}
+
     def stream(self, messages):
         primary = self._build_target(self.model, self.provider)
         state = {"yielded_any": False}
@@ -142,7 +175,8 @@ class LLMClient:
 
     def _stream_from_target(self, target: RequestTarget, messages, think_value, mark_yield):
         payload = self._build_payload(
-            target.model, messages, stream=True, think_value=think_value)
+            target.model, messages, stream=True, think_value=think_value
+        )
         timeout = (self.connect_timeout, self.read_timeout)
 
         try:
@@ -196,6 +230,32 @@ class LLMClient:
             raise RuntimeError(self._format_http_error(target, response))
         return response.json()
 
+    def _request_cloud_json(self, path: str, payload: dict) -> dict:
+        timeout = (self.connect_timeout, self.read_timeout or 60)
+        url = f"{self.cloud_base_url}{path}"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        try:
+            response = requests.post(
+                url,
+                json=payload,
+                headers=headers,
+                timeout=timeout,
+            )
+        except requests.RequestException as e:
+            raise RuntimeError(
+                f"No se pudo conectar con el servicio web de Ollama en {url}: {e}"
+            ) from e
+
+        if not response.ok:
+            raise RuntimeError(
+                f"Ollama web error {response.status_code} en {url}: "
+                f"{(response.text or '').strip()[:800] or 'sin detalle'}"
+            )
+        return response.json()
+
     def _build_payload(self, model: str, messages, stream: bool, think_value) -> dict:
         payload = {
             "model": model,
@@ -236,7 +296,8 @@ class LLMClient:
 
         try:
             fallback = self._build_target(
-                self.fallback_model, self.fallback_provider)
+                self.fallback_model, self.fallback_provider
+            )
         except Exception:
             return None
 

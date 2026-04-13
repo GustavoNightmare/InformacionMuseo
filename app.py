@@ -77,7 +77,8 @@ def sync_species_to_tts(species: Species) -> None:
         timeout=180,
     )
     if response.status_code >= 400:
-        raise RuntimeError(f"TTS sync HTTP {response.status_code}: {response.text[:300]}")
+        raise RuntimeError(
+            f"TTS sync HTTP {response.status_code}: {response.text[:300]}")
 
 
 def delete_species_from_tts(species_id: str, qr_id: str | None = None) -> None:
@@ -100,8 +101,10 @@ def delete_species_from_tts(species_id: str, qr_id: str | None = None) -> None:
         timeout=60,
     )
     if response.status_code >= 400:
-        raise RuntimeError(f"TTS delete HTTP {response.status_code}: {response.text[:300]}")
-    
+        raise RuntimeError(
+            f"TTS delete HTTP {response.status_code}: {response.text[:300]}")
+
+
 def sanitize_id(raw: str) -> str:
     if raw is None:
         return ""
@@ -131,7 +134,8 @@ def species_are_related(a: Species, b: Species) -> tuple[bool, bool, bool]:
 
 
 def species_context_for_comparison(item: Species) -> str:
-    curiosidades = "; ".join(item.curiosidades) if item.curiosidades else "No disponibles"
+    curiosidades = "; ".join(
+        item.curiosidades) if item.curiosidades else "No disponibles"
     return "\n".join([
         f"- ID QR: {item.qr_id or 'No disponible'}",
         f"- Nombre común: {item.nombre_comun or 'No disponible'}",
@@ -144,6 +148,106 @@ def species_context_for_comparison(item: Species) -> str:
         f"- Zonas: {item.zonas or 'No disponible'}",
         f"- Curiosidades: {curiosidades}",
     ])
+
+
+COMPARISON_MORPHOLOGY_KEYWORDS = (
+    "morfolog", "tamaño", "tamano", "longitud", "peso", "plumaje",
+    "color", "cresta", "cola", "pico", "beak", "bill", "plumage",
+    "morpholog", "size", "length", "wing", "tail"
+)
+COMPARISON_REPRODUCTION_KEYWORDS = (
+    "nido", "nidific", "huevo", "huevos", "reprodu", "cria", "cría",
+    "nest", "egg", "brood", "breeding"
+)
+
+
+def normalize_search_text(raw: str | None) -> str:
+    return re.sub(r"\s+", " ", (raw or "").strip()).lower()
+
+
+def truncate_text(raw: str | None, limit: int) -> str:
+    text = re.sub(r"\s+", " ", (raw or "").strip())
+    if len(text) <= limit:
+        return text
+    return text[: max(0, limit - 1)].rstrip() + "…"
+
+
+def species_needs_web_comparison_context(item: Species) -> bool:
+    text_parts = [
+        item.descripcion or "",
+        item.habitat or "",
+        item.dieta or "",
+        item.zonas or "",
+        "; ".join(item.curiosidades or []),
+    ]
+    combined = normalize_search_text(" ".join(text_parts))
+    populated_fields = sum(1 for value in [
+                           item.descripcion, item.habitat, item.dieta, item.zonas] if (value or "").strip())
+
+    lacks_morphology = not any(
+        keyword in combined for keyword in COMPARISON_MORPHOLOGY_KEYWORDS)
+    lacks_reproduction = not any(
+        keyword in combined for keyword in COMPARISON_REPRODUCTION_KEYWORDS)
+
+    return populated_fields < 4 or not item.curiosidades or lacks_morphology or lacks_reproduction
+
+
+def build_species_web_search_query(item: Species) -> str:
+    scientific = (item.nombre_cientifico or "").strip()
+    common = (item.nombre_comun or "").strip()
+    name_parts = [part for part in [scientific, common] if part]
+    subject = " / ".join(name_parts) if name_parts else (item.qr_id or "especie")
+    return (
+        f"{subject} morphology size plumage beak habitat diet nesting breeding conservation "
+        "bird species"
+    )
+
+
+def build_species_web_comparison_context(item: Species) -> str:
+    if not species_needs_web_comparison_context(item):
+        return ""
+
+    try:
+        search_results = llm.web_search(
+            build_species_web_search_query(item), max_results=4)
+    except Exception:
+        return ""
+
+    if not search_results:
+        return ""
+
+    lines = [
+        f"CONTEXTO WEB COMPLEMENTARIO PARA {item.nombre_comun or item.qr_id}:",
+        "Usa este bloque solo para completar vacíos puntuales de la ficha local.",
+    ]
+
+    for index, result in enumerate(search_results[:3], start=1):
+        if not isinstance(result, dict):
+            continue
+
+        title = truncate_text(result.get("title") or "Fuente web", 140)
+        url = truncate_text(result.get("url") or "", 180)
+        snippet = truncate_text(result.get("content") or "", 420)
+
+        if snippet:
+            lines.append(f"- Resultado {index}: {title} | {url} | {snippet}")
+
+        if index > 2:
+            continue
+
+        try:
+            fetched = llm.web_fetch(result.get("url") or "")
+        except Exception:
+            continue
+
+        content = truncate_text((fetched or {}).get("content") or "", 900)
+        if content:
+            lines.append(f"  Contenido ampliado {index}: {content}")
+
+    if len(lines) <= 2:
+        return ""
+
+    return "\n".join(lines)
 
 
 def get_species_pair_for_comparison(
@@ -175,8 +279,10 @@ def get_species_pair_for_comparison(
 def build_species_comparison_rows(a: Species, b: Species) -> list[dict[str, str]]:
     return [
         {"label": "ID QR", "a": a.qr_id, "b": b.qr_id},
-        {"label": "Nombre comun", "a": a.nombre_comun or "-", "b": b.nombre_comun or "-"},
-        {"label": "Nombre cientifico", "a": a.nombre_cientifico or "-", "b": b.nombre_cientifico or "-"},
+        {"label": "Nombre comun", "a": a.nombre_comun or "-",
+            "b": b.nombre_comun or "-"},
+        {"label": "Nombre cientifico", "a": a.nombre_cientifico or "-",
+            "b": b.nombre_cientifico or "-"},
         {"label": "Familia", "a": a.familia or "-", "b": b.familia or "-"},
         {"label": "Orden", "a": a.orden or "-", "b": b.orden or "-"},
         {"label": "Habitat", "a": a.habitat or "-", "b": b.habitat or "-"},
@@ -202,7 +308,8 @@ def build_basic_comparison_fallback(
         relation_parts.append(f"misma familia ({a.familia})")
     if same_order:
         relation_parts.append(f"mismo orden ({a.orden})")
-    relation_text = ", ".join(relation_parts) if relation_parts else "sin relación taxonómica directa"
+    relation_text = ", ".join(
+        relation_parts) if relation_parts else "sin relación taxonómica directa"
 
     def norm_text(raw: str | None) -> str:
         return (raw or "").strip().lower()
@@ -237,7 +344,8 @@ def build_basic_comparison_fallback(
         for label, detail in [
             (
                 entry.split(":", 1)[0].strip(),
-                entry.split(":", 1)[1].strip() if ":" in entry else entry.strip(),
+                entry.split(":", 1)[1].strip(
+                ) if ":" in entry else entry.strip(),
             )
             for entry in diferencias
         ]
@@ -339,10 +447,14 @@ def parse_species_comparison_analysis(
     if not isinstance(payload, dict):
         return None
 
-    fallback_payload = build_basic_comparison_fallback(a, b, same_family, same_order)
-    differences = normalize_comparison_analysis_items(payload.get("differences"), "Diferencia")
-    similarities = normalize_comparison_analysis_items(payload.get("similarities"), "Similitud")
-    adaptation_explanation = str(payload.get("adaptation_explanation") or "").strip()
+    fallback_payload = build_basic_comparison_fallback(
+        a, b, same_family, same_order)
+    differences = normalize_comparison_analysis_items(
+        payload.get("differences"), "Diferencia")
+    similarities = normalize_comparison_analysis_items(
+        payload.get("similarities"), "Similitud")
+    adaptation_explanation = str(payload.get(
+        "adaptation_explanation") or "").strip()
     visitor_message = str(payload.get("visitor_message") or "").strip()
 
     return {
@@ -366,11 +478,19 @@ def generate_species_comparison_analysis(
         relation_bits.append(f"mismo orden ({a.orden})")
     relation = ", ".join(relation_bits)
 
+    local_context_a = species_context_for_comparison(a)
+    local_context_b = species_context_for_comparison(b)
+    web_context_a = build_species_web_comparison_context(a)
+    web_context_b = build_species_web_comparison_context(b)
+
     system = (
         "Eres un guia de museo especializado en biodiversidad. "
         "Responde en espanol claro para publico general. "
-        "Compara dos especies usando SOLO los datos proporcionados. "
-        "Si un dato no esta disponible, dilo explicitamente y evita inventar informacion. "
+        "Compara dos especies usando SOLO los datos proporcionados en la conversacion. "
+        "Prioriza la ficha local del museo. "
+        "Si existe CONTEXTO WEB COMPLEMENTARIO, usalo solo para completar vacios puntuales de la ficha local. "
+        "Si la ficha local ya trae un dato, no lo contradigas con la web. "
+        "Evita inventar informacion. "
         "Devuelve EXCLUSIVAMENTE JSON valido, sin markdown ni texto extra."
     )
     user_prompt = (
@@ -388,11 +508,24 @@ def generate_species_comparison_analysis(
         "- similarities: 2 a 4 elementos.\n"
         "- adaptation_explanation: un parrafo corto sobre morfologia y adaptacion, siempre basada en la informacion disponible.\n"
         "- visitor_message: un cierre breve y atractivo para visitantes del museo.\n"
-        "- Si falta un dato, indicalo dentro del detail correspondiente.\n\n"
-        "Especie A:\n"
-        f"{species_context_for_comparison(a)}\n\n"
-        "Especie B:\n"
-        f"{species_context_for_comparison(b)}"
+        "- Usa primero la ficha local.\n"
+        "- Usa el contexto web solo para completar huecos; no lo uses para cambiar datos existentes del museo.\n"
+        "- No escribas 'no disponible' si el contexto web complementario si aporta el dato.\n"
+        "- Si un dato sigue faltando despues de revisar todo el contexto, indicalo dentro del detail correspondiente.\n\n"
+        "Especie A - ficha local:\n"
+        f"{local_context_a}\n\n"
+        + (
+            "Especie A - contexto web complementario:\n"
+            f"{web_context_a}\n\n"
+            if web_context_a else ""
+        )
+        + "Especie B - ficha local:\n"
+        + f"{local_context_b}\n\n"
+        + (
+            "Especie B - contexto web complementario:\n"
+            f"{web_context_b}"
+            if web_context_b else ""
+        )
     )
 
     try:
@@ -400,7 +533,8 @@ def generate_species_comparison_analysis(
             {"role": "system", "content": system},
             {"role": "user", "content": user_prompt},
         ]).strip()
-        parsed_answer = parse_species_comparison_analysis(answer, a, b, same_family, same_order)
+        parsed_answer = parse_species_comparison_analysis(
+            answer, a, b, same_family, same_order)
         if parsed_answer:
             return parsed_answer, True
     except Exception:
@@ -536,8 +670,10 @@ def get_qr_style_dict(species: Species, style_obj: QRStyle | None = None, overri
         )[:80].strip()
 
         if is_multi_dict:
-            data["show_top_text"] = parse_bool(source.get("show_top_text"), False)
-            data["show_label_text"] = parse_bool(source.get("show_label_text"), False)
+            data["show_top_text"] = parse_bool(
+                source.get("show_top_text"), False)
+            data["show_label_text"] = parse_bool(
+                source.get("show_label_text"), False)
         else:
             if "show_top_text" in source:
                 data["show_top_text"] = parse_bool(
@@ -649,7 +785,8 @@ def load_qr_font(size: int, *, bold: bool = False):
         except OSError:
             continue
 
-    windows_fonts = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
+    windows_fonts = os.path.join(
+        os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
     for name in font_names:
         try:
             return ImageFont.truetype(os.path.join(windows_fonts, name), target_size)
@@ -668,7 +805,8 @@ def render_qr_image(species: Species, style_data: dict, qr_value: str | None = N
         box_size=style_data["box_size"],
         border=style_data["border"],
     )
-    qr_payload = sanitize_id(qr_value if qr_value is not None else (species.qr_id or species.id))
+    qr_payload = sanitize_id(
+        qr_value if qr_value is not None else (species.qr_id or species.id))
     if not qr_payload:
         qr_payload = species.id
     qr.add_data(qr_payload)
@@ -688,8 +826,10 @@ def render_qr_image(species: Species, style_data: dict, qr_value: str | None = N
     frame_style = style_data["frame_style"]
     top_text = (style_data.get("top_text") or "").strip()
     label_text = (style_data.get("label_text") or "").strip()
-    show_top_text = bool(style_data.get("show_top_text", True)) and bool(top_text)
-    show_label_text = bool(style_data.get("show_label_text", True)) and bool(label_text)
+    show_top_text = bool(style_data.get(
+        "show_top_text", True)) and bool(top_text)
+    show_label_text = bool(style_data.get(
+        "show_label_text", True)) and bool(label_text)
 
     if frame_style == "simple" and not show_top_text and not show_label_text:
         return qr_img
@@ -856,7 +996,8 @@ def ensure_schema_updates():
             )
             changed = True
 
-    idx_rows = db.session.execute(text("PRAGMA index_list(species)")).fetchall()
+    idx_rows = db.session.execute(
+        text("PRAGMA index_list(species)")).fetchall()
     has_unique_qr_index = False
     for row in idx_rows:
         idx_name = row[1]
@@ -885,25 +1026,29 @@ def ensure_schema_updates():
 
     if "show_top_text" not in qr_cols:
         db.session.execute(
-            text(f'ALTER TABLE "{qr_table}" ADD COLUMN show_top_text BOOLEAN DEFAULT 1')
+            text(
+                f'ALTER TABLE "{qr_table}" ADD COLUMN show_top_text BOOLEAN DEFAULT 1')
         )
         changed = True
 
     if "show_label_text" not in qr_cols:
         db.session.execute(
-            text(f'ALTER TABLE "{qr_table}" ADD COLUMN show_label_text BOOLEAN DEFAULT 1')
+            text(
+                f'ALTER TABLE "{qr_table}" ADD COLUMN show_label_text BOOLEAN DEFAULT 1')
         )
         changed = True
 
     if "top_text_size" not in qr_cols:
         db.session.execute(
-            text(f'ALTER TABLE "{qr_table}" ADD COLUMN top_text_size INTEGER DEFAULT 18')
+            text(
+                f'ALTER TABLE "{qr_table}" ADD COLUMN top_text_size INTEGER DEFAULT 18')
         )
         changed = True
 
     if "label_text_size" not in qr_cols:
         db.session.execute(
-            text(f'ALTER TABLE "{qr_table}" ADD COLUMN label_text_size INTEGER DEFAULT 18')
+            text(
+                f'ALTER TABLE "{qr_table}" ADD COLUMN label_text_size INTEGER DEFAULT 18')
         )
         changed = True
 
@@ -996,7 +1141,8 @@ def format_museum_rag_context(chunks: list[dict]) -> str:
     lines = []
     for idx, chunk in enumerate(chunks, start=1):
         meta = chunk.get("meta") or {}
-        source_label = meta.get("source_label") or meta.get("source") or "museo"
+        source_label = meta.get(
+            "source_label") or meta.get("source") or "museo"
         lines.append(f"[{idx}] Fuente: {source_label}\n{chunk['text']}")
     return "FRAGMENTOS RELEVANTES DEL MUSEO (RAG):\n" + "\n\n".join(lines)
 
@@ -1157,7 +1303,8 @@ def api_chat_stream():
                 + "."
             )
 
-    structured = build_structured_context(current_user.id, sp, question_scope=question_scope)
+    structured = build_structured_context(
+        current_user.id, sp, question_scope=question_scope)
 
     try:
         chunks = get_vs().query_species(
@@ -1213,6 +1360,8 @@ def api_chat_stream():
             yield f"{nl}{nl}[ERROR] {e}"
 
     return Response(stream_with_context(generate()), mimetype="text/plain; charset=utf-8")
+
+
 @app.get("/")
 def index():
     return render_template("index.html")
@@ -1629,8 +1778,6 @@ def admin_species_edit_post(species_id):
         flash(str(ve), "error")
         return redirect(url_for("admin_species_edit", species_id=item.id))
 
-    
-
     db.session.commit()
 
     try:
@@ -1644,6 +1791,7 @@ def admin_species_edit_post(species_id):
         flash(f"Editado OK, pero falló generación de audio TTS: {e}", "error")
 
     return redirect(url_for("admin_species_list"))
+
 
 @app.post("/admin/especies/<species_id>/eliminar")
 @login_required
@@ -1759,6 +1907,7 @@ def admin_qr_customize(species_id):
         has_custom_style=style_obj is not None,
     )
 
+
 @app.cli.command("reindex-all")
 def reindex_all():
     with app.app_context():
@@ -1781,6 +1930,8 @@ def reindex_all():
         print("⚠️ Fallaron estas especies:")
         for line in failed:
             print(f" - {line}")
+
+
 @app.post("/admin/qr/<species_id>/personalizar")
 @login_required
 def admin_qr_customize_post(species_id):
@@ -1824,7 +1975,8 @@ def admin_qr_customize_post(species_id):
     try:
         sync_species_to_tts(item)
     except Exception as e:
-        flash(f"QR guardado, pero falló actualización de audio TTS: {e}", "error")
+        flash(
+            f"QR guardado, pero falló actualización de audio TTS: {e}", "error")
     flash("QR personalizado guardado.", "ok")
     return redirect(url_for("admin_qr_customize", species_id=item.id))
 
@@ -1888,7 +2040,6 @@ def admin_qr_image(species_id, fmt):
 # --------- CHAT API (RAG) ---------
 
 
-
 @app.post("/api/chat")
 def api_chat():
     data = request.get_json(silent=True) or {}
@@ -1907,7 +2058,8 @@ def api_chat():
     question_scope = classify_question_scope(user_msg)
     user_id = current_user.id if current_user.is_authenticated else None
     nl = chr(10)
-    structured = build_structured_context(user_id, sp, question_scope=question_scope)
+    structured = build_structured_context(
+        user_id, sp, question_scope=question_scope)
 
     try:
         chunks = get_vs().query_species(
@@ -1930,7 +2082,8 @@ def api_chat():
 
     messages = [
         {"role": "system", "content": system},
-        {"role": "system", "content": f"Tipo de pregunta detectado: {question_scope}." + nl + nl + structured},
+        {"role": "system", "content": f"Tipo de pregunta detectado: {question_scope}." +
+            nl + nl + structured},
         {"role": "system", "content": museum_context},
         {"role": "user", "content": user_msg},
     ]
