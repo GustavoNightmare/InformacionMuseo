@@ -8,9 +8,75 @@
       class="w-full rounded-2xl border border-slate-200 px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" />
     <input type="password" name="password" placeholder="Contraseña"
       class="w-full rounded-2xl border border-slate-200 px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200" />
-    <button class="w-full rounded-2xl bg-emerald-600 px-4 py-2 text-white text-sm font-medium hover:bg-emerald-700">
+    <button class="w-full rounded-2xl bg-emerald-600 px-4 py-2 text-white text-sm font-medium hover:bg-emerald-700 transition-colors">
       Entrar
     </button>
   </form>
+
+  <div class="relative my-6">
+    <div class="absolute inset-0 flex items-center"><span class="w-full border-t border-slate-100"></span></div>
+    <div class="relative flex justify-center text-xs uppercase"><span class="bg-white px-2 text-slate-400">O también</span></div>
+  </div>
+
+  <button id="startQR" class="flex w-full items-center justify-center gap-2 rounded-2xl border border-emerald-200 bg-emerald-50 px-4 py-2 text-sm font-medium text-emerald-700 hover:bg-emerald-100 transition-colors">
+    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect width="5" height="5" x="3" y="3" rx="1"/><rect width="5" height="5" x="16" y="3" rx="1"/><rect width="5" height="5" x="3" y="16" rx="1"/><path d="M21 16h-3a2 2 0 0 0-2 2v3"/><path d="M21 21v.01"/><path d="M12 7v3a2 2 0 0 1-2 2H7"/><path d="M3 12h.01"/><path d="M12 3h.01"/><path d="M12 16v.01"/><path d="M16 12h1"/><path d="M21 12v.01"/><path d="M12 21v-1"/></svg>
+    Ingresar con código QR
+  </button>
+
+  <div id="qr-container" class="mt-4 hidden p-2 border border-emerald-100 rounded-2xl bg-slate-50 overflow-hidden text-center">
+    <div id="reader" style="width: 100%;"></div>
+    <button id="stopQR" class="mt-2 text-xs text-rose-600 hover:underline">Cancelar escaneo</button>
+  </div>
 </div>
+
+<script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+<script>
+  let html5QrCode = null;
+
+  async function onScanSuccess(decodedText, decodedResult) {
+    if (html5QrCode) {
+      await html5QrCode.stop().catch(e => console.error(e));
+      html5QrCode = null;
+      document.getElementById('qr-container').classList.add('hidden');
+    }
+
+    try {
+      const data = JSON.parse(decodedText);
+      const response = await fetch("{{ url_for('login_qr_api') }}", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data)
+      });
+
+      const result = await response.json();
+      if (result.ok) {
+        window.location.href = "{{ url_for('index') }}";
+      } else {
+        alert("Error: " + (result.error || "No se pudo iniciar sesión."));
+      }
+    } catch (e) {
+      alert("El contenido del QR no es un JSON válido o hubo un problema con el servidor.");
+      console.error(e);
+    }
+  }
+
+  document.getElementById('startQR').addEventListener('click', () => {
+    const container = document.getElementById('qr-container');
+    container.classList.remove('hidden');
+    html5QrCode = new Html5Qrcode("reader");
+    html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: 250 }, onScanSuccess)
+      .catch(err => {
+        alert("Error al iniciar cámara: " + err);
+        container.classList.add('hidden');
+      });
+  });
+
+  document.getElementById('stopQR').addEventListener('click', async () => {
+    if (html5QrCode) {
+      await html5QrCode.stop().catch(e => console.error(e));
+      html5QrCode = null;
+    }
+    document.getElementById('qr-container').classList.add('hidden');
+  });
+</script>
 {% endblock %}

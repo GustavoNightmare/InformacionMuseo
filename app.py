@@ -1391,6 +1391,72 @@ def login_post():
         return redirect(next_url)
 
     return redirect(url_for("index"))
+
+
+@app.post("/api/login/qr")
+def login_qr_api():
+    data = request.get_json(silent=True) or {}
+    nombre = (data.get("nombre") or "").strip()
+    cedula = (data.get("cedula") or "").strip()
+    fecha_nac_str = (data.get("fecha_nacimiento") or "").strip()
+    sexo = (data.get("sexo") or "").strip().upper()
+
+    if not cedula or not nombre:
+        return jsonify({"ok": False, "error": "Datos del QR incompletos (nombre y cedula requeridos)."}), 400
+
+    # Intentar parsear fecha para calcular edad
+    edad = None
+    fecha_nac = None
+    if fecha_nac_str:
+        try:
+            fecha_nac = datetime.strptime(fecha_nac_str, "%Y-%m-%d").date()
+            today = date.today()
+            edad = today.year - fecha_nac.year - (
+                (today.month, today.day) < (fecha_nac.month, fecha_nac.day)
+            )
+        except Exception:
+            pass
+
+    # Buscar por cédula o por username (siendo la cédula el username)
+    user = User.query.filter_by(username=cedula).first()
+    if not user:
+        # Buscar por campo cedula si existe
+        user = User.query.filter_by(cedula=cedula).first()
+
+    if not user:
+        # Crear usuario automáticamente
+        # No tiene password, pero el modelo lo exige (le ponemos uno aleatorio)
+        user = User(
+            username=cedula,
+            nombre=nombre,
+            cedula=cedula,
+            fecha_nacimiento=fecha_nac,
+            sexo=sexo,
+            edad=edad,
+            is_admin=False
+        )
+        user.set_password(uuid.uuid4().hex)
+        db.session.add(user)
+        db.session.commit()
+    else:
+        # Actualizar datos si han cambiado (opcional, pero util si el QR trae info nueva)
+        user.nombre = nombre
+        if fecha_nac:
+            user.fecha_nacimiento = fecha_nac
+            user.edad = edad
+        if sexo:
+            user.sexo = sexo
+        db.session.commit()
+
+    login_user(user)
+    return jsonify({
+        "ok": True,
+        "message": "Inicio de sesión exitoso",
+        "user": {
+            "nombre": user.nombre,
+            "username": user.username
+        }
+    })
 # --------------------------------------
 
 
