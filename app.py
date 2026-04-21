@@ -28,6 +28,7 @@ import urllib.parse
 import uuid
 import re
 import os
+import unicodedata
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -148,106 +149,6 @@ def species_context_for_comparison(item: Species) -> str:
         f"- Zonas: {item.zonas or 'No disponible'}",
         f"- Curiosidades: {curiosidades}",
     ])
-
-
-COMPARISON_MORPHOLOGY_KEYWORDS = (
-    "morfolog", "tamaño", "tamano", "longitud", "peso", "plumaje",
-    "color", "cresta", "cola", "pico", "beak", "bill", "plumage",
-    "morpholog", "size", "length", "wing", "tail"
-)
-COMPARISON_REPRODUCTION_KEYWORDS = (
-    "nido", "nidific", "huevo", "huevos", "reprodu", "cria", "cría",
-    "nest", "egg", "brood", "breeding"
-)
-
-
-def normalize_search_text(raw: str | None) -> str:
-    return re.sub(r"\s+", " ", (raw or "").strip()).lower()
-
-
-def truncate_text(raw: str | None, limit: int) -> str:
-    text = re.sub(r"\s+", " ", (raw or "").strip())
-    if len(text) <= limit:
-        return text
-    return text[: max(0, limit - 1)].rstrip() + "…"
-
-
-def species_needs_web_comparison_context(item: Species) -> bool:
-    text_parts = [
-        item.descripcion or "",
-        item.habitat or "",
-        item.dieta or "",
-        item.zonas or "",
-        "; ".join(item.curiosidades or []),
-    ]
-    combined = normalize_search_text(" ".join(text_parts))
-    populated_fields = sum(1 for value in [
-                           item.descripcion, item.habitat, item.dieta, item.zonas] if (value or "").strip())
-
-    lacks_morphology = not any(
-        keyword in combined for keyword in COMPARISON_MORPHOLOGY_KEYWORDS)
-    lacks_reproduction = not any(
-        keyword in combined for keyword in COMPARISON_REPRODUCTION_KEYWORDS)
-
-    return populated_fields < 4 or not item.curiosidades or lacks_morphology or lacks_reproduction
-
-
-def build_species_web_search_query(item: Species) -> str:
-    scientific = (item.nombre_cientifico or "").strip()
-    common = (item.nombre_comun or "").strip()
-    name_parts = [part for part in [scientific, common] if part]
-    subject = " / ".join(name_parts) if name_parts else (item.qr_id or "especie")
-    return (
-        f"{subject} morphology size plumage beak habitat diet nesting breeding conservation "
-        "bird species"
-    )
-
-
-def build_species_web_comparison_context(item: Species) -> str:
-    if not species_needs_web_comparison_context(item):
-        return ""
-
-    try:
-        search_results = llm.web_search(
-            build_species_web_search_query(item), max_results=4)
-    except Exception:
-        return ""
-
-    if not search_results:
-        return ""
-
-    lines = [
-        f"CONTEXTO WEB COMPLEMENTARIO PARA {item.nombre_comun or item.qr_id}:",
-        "Usa este bloque solo para completar vacíos puntuales de la ficha local.",
-    ]
-
-    for index, result in enumerate(search_results[:3], start=1):
-        if not isinstance(result, dict):
-            continue
-
-        title = truncate_text(result.get("title") or "Fuente web", 140)
-        url = truncate_text(result.get("url") or "", 180)
-        snippet = truncate_text(result.get("content") or "", 420)
-
-        if snippet:
-            lines.append(f"- Resultado {index}: {title} | {url} | {snippet}")
-
-        if index > 2:
-            continue
-
-        try:
-            fetched = llm.web_fetch(result.get("url") or "")
-        except Exception:
-            continue
-
-        content = truncate_text((fetched or {}).get("content") or "", 900)
-        if content:
-            lines.append(f"  Contenido ampliado {index}: {content}")
-
-    if len(lines) <= 2:
-        return ""
-
-    return "\n".join(lines)
 
 
 def get_species_pair_for_comparison(
@@ -478,19 +379,11 @@ def generate_species_comparison_analysis(
         relation_bits.append(f"mismo orden ({a.orden})")
     relation = ", ".join(relation_bits)
 
-    local_context_a = species_context_for_comparison(a)
-    local_context_b = species_context_for_comparison(b)
-    web_context_a = build_species_web_comparison_context(a)
-    web_context_b = build_species_web_comparison_context(b)
-
     system = (
         "Eres un guia de museo especializado en biodiversidad. "
         "Responde en espanol claro para publico general. "
-        "Compara dos especies usando SOLO los datos proporcionados en la conversacion. "
-        "Prioriza la ficha local del museo. "
-        "Si existe CONTEXTO WEB COMPLEMENTARIO, usalo solo para completar vacios puntuales de la ficha local. "
-        "Si la ficha local ya trae un dato, no lo contradigas con la web. "
-        "Evita inventar informacion. "
+        "Compara dos especies usando SOLO los datos proporcionados. "
+        "Si un dato no esta disponible, dilo explicitamente y evita inventar informacion. "
         "Devuelve EXCLUSIVAMENTE JSON valido, sin markdown ni texto extra."
     )
     user_prompt = (
@@ -508,24 +401,11 @@ def generate_species_comparison_analysis(
         "- similarities: 2 a 4 elementos.\n"
         "- adaptation_explanation: un parrafo corto sobre morfologia y adaptacion, siempre basada en la informacion disponible.\n"
         "- visitor_message: un cierre breve y atractivo para visitantes del museo.\n"
-        "- Usa primero la ficha local.\n"
-        "- Usa el contexto web solo para completar huecos; no lo uses para cambiar datos existentes del museo.\n"
-        "- No escribas 'no disponible' si el contexto web complementario si aporta el dato.\n"
-        "- Si un dato sigue faltando despues de revisar todo el contexto, indicalo dentro del detail correspondiente.\n\n"
-        "Especie A - ficha local:\n"
-        f"{local_context_a}\n\n"
-        + (
-            "Especie A - contexto web complementario:\n"
-            f"{web_context_a}\n\n"
-            if web_context_a else ""
-        )
-        + "Especie B - ficha local:\n"
-        + f"{local_context_b}\n\n"
-        + (
-            "Especie B - contexto web complementario:\n"
-            f"{web_context_b}"
-            if web_context_b else ""
-        )
+        "- Si falta un dato, indicalo dentro del detail correspondiente.\n\n"
+        "Especie A:\n"
+        f"{species_context_for_comparison(a)}\n\n"
+        "Especie B:\n"
+        f"{species_context_for_comparison(b)}"
     )
 
     try:
@@ -1149,27 +1029,36 @@ def format_museum_rag_context(chunks: list[dict]) -> str:
 
 def build_chat_scope_rules(question_scope: str) -> str:
     base = [
-        "Solo puedes responder sobre el animal actual del museo y, cuando exista, sobre el ejemplar o pieza exhibida.",
-        "Si el usuario pide algo fuera de ese alcance, responde brevemente que solo puedes ayudar con este animal del museo.",
+        "Responde principalmente sobre el animal actual del museo y, cuando exista, sobre el ejemplar o pieza exhibida.",
+        "Tambien puedes responder cuantos animales/especies hay registrados actualmente en el museo si el usuario lo pregunta.",
+        "Tambien puedes personalizar la respuesta con el recorrido reciente del usuario cuando ese contexto exista.",
+        "Si relacionas este animal con otros ya vistos por el usuario, limitate a semejanzas taxonomicas verificables como familia u orden.",
+        "No afirmes antepasados especificos, evolucion directa ni parentescos geneticos no documentados en el contexto.",
+        "Si el usuario pide algo fuera de ese alcance, responde brevemente que solo puedes ayudar con este animal del museo y con el recorrido registrado.",
         "No inventes datos.",
+        "No inventes datos.",
+        "Si relacionas este animal con otros vistos por el usuario, limita la relacion a familia u orden.",
+        "No afirmes antepasados especificos.",
+        "Escribe la respuesta bien organizada, con parrafos cortos y, si ayuda, listas con guion (-).",
+        "No uses markdown, no pongas ** ni encabezados con simbolos. Usa texto limpio listo para mostrarse en el chat.",
     ]
 
     if question_scope == "specimen":
         base.extend([
-            "La pregunta fue detectada como específica del espécimen/ejemplar expuesto.",
+            "La pregunta fue detectada como especifica del especimen/ejemplar exhibido.",
             "Usa primero y por encima de todo los fragmentos del museo.",
-            "NO deduzcas procedencia, localidad de hallazgo, colección, fecha o historia del ejemplar a partir de la distribución general de la especie, su hábitat o su dieta.",
+            "NO deduzcas procedencia, localidad de hallazgo, coleccion, fecha o historia del ejemplar a partir de la distribucion general de la especie, su habitat o su dieta.",
             "Si el contexto del museo no trae ese dato puntual, dilo claramente: el museo no especifica ese dato del ejemplar exhibido.",
         ])
     elif question_scope == "general":
         base.extend([
             "La pregunta fue detectada como general sobre la especie.",
-            "Puedes usar la ficha estructurada y complementar con fragmentos del museo, pero siempre limita la respuesta al animal actual de la ficha.",
+            "Puedes usar la ficha estructurada y complementar con fragmentos del museo, pero manten la respuesta en el animal actual, el museo y el recorrido registrado del usuario.",
         ])
     else:
         base.extend([
             "La pregunta puede mezclar datos generales y datos del museo.",
-            "Si aparece una posible ambigüedad entre especie general y ejemplar exhibido, prioriza el dato del museo y aclara la diferencia.",
+            "Si aparece una posible ambiguedad entre especie general y ejemplar exhibido, prioriza el dato del museo y aclara la diferencia.",
         ])
 
     return "\n".join(base)
@@ -1201,6 +1090,219 @@ def save_chat_turns(user_id: int, species_id: str, user_text: str, assistant_tex
         db.session.delete(t)
     if old:
         db.session.commit()
+
+
+def get_total_museum_species_count() -> int:
+    return int(Species.query.count() or 0)
+
+
+def get_user_unique_visit_count(user_id: int) -> int:
+    return int(
+        (db.session.query(Visit.species_id)
+         .filter(Visit.user_id == user_id)
+         .distinct()
+         .count())
+        or 0
+    )
+
+
+def describe_taxonomy_relationship(current_species: Species, other_species: Species) -> str:
+    if other_species.id == current_species.id:
+        return "Es el mismo animal que estas viendo ahora."
+
+    current_family = normalize_taxonomy(current_species.familia)
+    other_family = normalize_taxonomy(other_species.familia)
+    current_order = normalize_taxonomy(current_species.orden)
+    other_order = normalize_taxonomy(other_species.orden)
+
+    if current_family and other_family and current_family == other_family:
+        family_label = current_species.familia or other_species.familia or "misma familia"
+        if current_order and other_order and current_order == other_order:
+            order_label = current_species.orden or other_species.orden or "mismo orden"
+            return (
+                f"Comparte familia ({family_label}) y orden ({order_label}) con el animal actual. "
+                "Eso sugiere un parentesco taxonomico cercano en la clasificacion del museo."
+            )
+        return (
+            f"Comparte familia ({family_label}) con el animal actual. "
+            "Eso indica un parentesco taxonomico cercano segun la ficha."
+        )
+
+    if current_order and other_order and current_order == other_order:
+        order_label = current_species.orden or other_species.orden or "mismo orden"
+        return (
+            f"Comparte orden ({order_label}) con el animal actual, aunque pertenece a otra familia. "
+            "La relacion existe, pero es mas general."
+        )
+
+    return "Con la ficha disponible no se observa un parentesco taxonomico cercano con el animal actual."
+
+
+def build_tour_memory_context(user_id: int | None, current_species: Species, limit: int = 8) -> str:
+    if not user_id:
+        return ""
+
+    total_species = get_total_museum_species_count()
+    visited_unique = get_user_unique_visit_count(user_id)
+    recent_visits = (
+        db.session.query(Visit, Species)
+        .join(Species, Species.id == Visit.species_id)
+        .filter(Visit.user_id == user_id)
+        .order_by(Visit.visited_at.desc())
+        .limit(limit)
+        .all()
+    )
+
+    lines = [
+        "CONTEXTO PERSONALIZADO DEL RECORRIDO Y DEL MUSEO:",
+        f"- Total de animales/especies registradas actualmente en el museo: {total_species}.",
+        f"- Animales/especies distintas que este usuario ya ha visitado: {visited_unique}.",
+    ]
+
+    if recent_visits:
+        lines.append(
+            "Recorrido reciente del usuario (de la visita mas reciente hacia atras):")
+        for index, (_, visited_species) in enumerate(recent_visits, start=1):
+            marker = " [animal actual]" if visited_species.id == current_species.id else ""
+            lines.append(
+                f"- Visita {index}: {visited_species.nombre_comun} ({visited_species.qr_id}){marker}. "
+                f"Familia: {visited_species.familia or 'sin dato'}. "
+                f"Orden: {visited_species.orden or 'sin dato'}. "
+                f"Relacion con el animal actual: {describe_taxonomy_relationship(current_species, visited_species)}"
+            )
+    else:
+        lines.append("- El usuario aun no tiene visitas previas registradas.")
+
+    lines.append(
+        "Reglas de personalizacion: si el usuario pregunta por animales visitados o por parentesco, usa solo las relaciones de familia y orden disponibles. "
+        "No afirmes antepasados concretos ni historia evolutiva detallada si no aparece en la ficha o en los documentos del museo."
+    )
+
+    return "\n".join(lines)
+
+
+def normalize_chat_question(text: str) -> str:
+    """Normalize chat question for consistent matching."""
+    if not text:
+        return ""
+    # Normalize unicode characters
+    text = unicodedata.normalize('NFKD', text)
+    # Convert to lowercase and remove extra whitespace
+    text = re.sub(r'\s+', ' ', text.strip().lower())
+    return text
+
+
+def get_recent_unique_visited_species(user_id: int, current_species: Species, limit: int = 8) -> list[Species]:
+    """Get recently visited species excluding the current one."""
+    recent_visits = (
+        db.session.query(Visit, Species)
+        .join(Species, Species.id == Visit.species_id)
+        .filter(Visit.user_id == user_id, Visit.species_id != current_species.id)
+        .order_by(Visit.visited_at.desc())
+        .limit(limit)
+        .all()
+    )
+    return [species for _, species in recent_visits]
+
+
+def is_museum_count_question(question: str) -> bool:
+    """Check if question is asking about total museum species count."""
+    normalized = normalize_chat_question(question)
+    count_terms = [
+        "cuantos animales hay", 
+        "cuantas especies hay",
+        "numero total de animales",
+        "cantidad de especies",
+        "total de animales",
+        "total de especies"
+    ]
+    return any(term in normalized for term in count_terms)
+
+
+def is_tour_relationship_question(question: str) -> bool:
+    """Check if question is asking about relationships with visited species."""
+    normalized = normalize_chat_question(question)
+    relationship_terms = [
+        "se parece a alguno",
+        "relacion con alguno",
+        "parece a los que vi",
+        "esta relacionado con",
+        "familiar con alguno",
+        "mismo tipo que los otros",
+        "tiene parentesco con"
+    ]
+    return any(term in normalized for term in relationship_terms)
+
+
+def build_direct_museum_count_answer(user_id: int, current_species: Species) -> str:
+    """Build direct answer for museum count questions."""
+    total_count = get_total_museum_species_count()
+    visited_count = get_user_unique_visit_count(user_id)
+    
+    return (
+        f"En nuestro museo hay actualmente {total_count} animales/especies registradas. "
+        f"Has visitado {visited_count} especies distintas hasta ahora. "
+        "¡Sigue explorando para descubrir más!"
+    )
+
+
+def build_direct_relationship_answer(user_id: int, current_species: Species) -> str:
+    """Build direct answer for tour relationship questions."""
+    visited_species = get_recent_unique_visited_species(user_id, current_species, limit=8)
+    
+    if not visited_species:
+        return (
+            "Según tu recorrido, aún no has visitado otras especies además de esta. "
+            "¡Te invito a seguir explorando el museo para comparar esta especie con otras!"
+        )
+    
+    related_species = []
+    for species in visited_species:
+        related, same_family, same_order = species_are_related(current_species, species)
+        if related:
+            relationship_desc = describe_taxonomy_relationship(current_species, species)
+            related_species.append({
+                "species": species,
+                "relationship": relationship_desc
+            })
+    
+    if not related_species:
+        return (
+            f"He revisado tu recorrido reciente ({len(visited_species)} especies visitadas) "
+            "y no encontré relaciones taxonómicas cercanas con esta especie. "
+            "Esto significa que pertenece a una familia u orden diferente a las que has visto hasta ahora."
+        )
+    
+    # Build response with related species
+    response_parts = [
+        f"Basándome en tu recorrido, he encontrado {len(related_species)} especie(s) "
+        "con relación taxonómica cercana a esta:"
+    ]
+    
+    for item in related_species[:3]:  # Limit to top 3
+        species = item["species"]
+        relationship = item["relationship"]
+        response_parts.append(
+            f"- {species.nombre_comun} ({species.qr_id}): {relationship}"
+        )
+    
+    if len(related_species) > 3:
+        response_parts.append(
+            f"... y {len(related_species) - 3} más con relaciones similares."
+        )
+    
+    return " ".join(response_parts)
+
+
+def maybe_build_direct_chat_answer(user_id: int, current_species: Species, user_msg: str) -> str | None:
+    """Try to build a direct answer without using LLM if possible."""
+    if is_museum_count_question(user_msg):
+        return build_direct_museum_count_answer(user_id, current_species)
+    
+    if is_tour_relationship_question(user_msg):
+        return build_direct_relationship_answer(user_id, current_species)
+    
+    return None
 
 
 @login_manager.user_loader
@@ -1276,32 +1378,24 @@ def api_chat_stream():
             + "Regla: responde solo a la nueva pregunta y no repitas completa la respuesta anterior."
         )
 
-    tour_note = ""
-    last = (db.session.query(Visit, Species)
-            .join(Species, Species.id == Visit.species_id)
-            .filter(Visit.user_id == current_user.id)
-            .order_by(Visit.visited_at.desc())
-            .limit(8)
-            .all())
+    # Try to build a direct answer without using LLM first
+    direct_answer = maybe_build_direct_chat_answer(current_user.id, sp, user_msg)
+    if direct_answer:
+        # Save the direct answer to chat history
+        save_chat_turns(
+            current_user.id,
+            species_id,
+            user_msg,
+            direct_answer,
+            keep_last=60,
+        )
+        
+        # Return the direct answer as a stream
+        def generate_direct():
+            yield direct_answer
+        return Response(stream_with_context(generate_direct()), mimetype="text/plain; charset=utf-8")
 
-    if last:
-        lines = []
-        current_family = (sp.familia or "").strip().lower()
-        same_family = []
-        for v, s in last:
-            fam = s.familia or "?"
-            lines.append(f"- {s.nombre_comun} ({s.id}) — familia: {fam}")
-            if current_family and s.id != sp.id and (s.familia or "").strip().lower() == current_family:
-                same_family.append(f"{s.nombre_comun} ({s.id})")
-
-        tour_note = "Recorrido reciente del usuario:" + nl + nl.join(lines)
-        if same_family:
-            tour_note += (
-                nl + nl + "Relación:" + nl
-                + f"Esta especie comparte familia ({sp.familia}) con: "
-                + ", ".join(same_family)
-                + "."
-            )
+    tour_note = build_tour_memory_context(current_user.id, sp, limit=8)
 
     structured = build_structured_context(
         current_user.id, sp, question_scope=question_scope)
@@ -1319,10 +1413,12 @@ def api_chat_stream():
     rag_context = format_museum_rag_context(chunks)
 
     system = nl.join([
-        "Eres un guía del museo. Responde en español, claro y amable.",
-        "Responde SOLO a la última pregunta del usuario.",
+        "Eres un guia del museo. Responde en espanol, claro, amable y personalizado.",
+        "Responde SOLO a la ultima pregunta del usuario.",
         "NO hagas preguntas de vuelta ni sugieras nuevas preguntas.",
-        "Si el usuario pide ejemplos, da 3 a 5 ejemplos concretos cuando el contexto sí los permita.",
+        "Si el usuario pide ejemplos, da 3 a 5 ejemplos concretos cuando el contexto si los permita.",
+        "Escribe la respuesta bien organizada, con parrafos cortos y, si ayuda, listas con guion (-).",
+        "No uses markdown, no pongas ** ni encabezados con simbolos.",
         build_chat_scope_rules(question_scope),
     ])
 
@@ -2060,6 +2156,7 @@ def api_chat():
     nl = chr(10)
     structured = build_structured_context(
         user_id, sp, question_scope=question_scope)
+    tour_note = build_tour_memory_context(user_id, sp, limit=8)
 
     try:
         chunks = get_vs().query_species(
@@ -2074,17 +2171,26 @@ def api_chat():
     museum_context = format_museum_rag_context(chunks)
 
     system = nl.join([
-        "Eres un guía del museo. Responde en español, claro y amable.",
+        "Eres un guia del museo. Responde en espanol, claro, amable y personalizado.",
         "Usa SOLO el contexto proporcionado.",
-        "Si no es posible responder con el contexto, dilo claramente e indica qué dato del museo faltaría.",
+        "Si no es posible responder con el contexto, dilo claramente e indica que dato del museo faltaria.",
+        "Escribe la respuesta bien organizada, con parrafos cortos y, si ayuda, listas con guion (-).",
+        "No uses markdown, no pongas ** ni encabezados con simbolos.",
         build_chat_scope_rules(question_scope),
     ])
 
+    full_context = (
+        f"Tipo de pregunta detectado: {question_scope}."
+        + nl + nl
+        + "Ficha (BD):" + nl
+        + structured + nl + nl
+        + (tour_note + nl + nl if tour_note else "")
+        + museum_context
+    )
+
     messages = [
         {"role": "system", "content": system},
-        {"role": "system", "content": f"Tipo de pregunta detectado: {question_scope}." +
-            nl + nl + structured},
-        {"role": "system", "content": museum_context},
+        {"role": "system", "content": full_context},
         {"role": "user", "content": user_msg},
     ]
 

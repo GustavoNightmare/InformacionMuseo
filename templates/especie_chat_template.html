@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+{% block title %}{{ item.nombre_comun }} | BioScan{% endblock %}
+{% block content %}
+<a href="{{ url_for('especies') }}" class="text-sm text-emerald-700 hover:underline">← Volver</a>
+
+{% if not current_user.is_authenticated %}
+<div class="mt-4 rounded-2xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-900">
+  Inicia sesión para guardar tu recorrido y desbloquear la imagen a color cuando escanees el QR.
+</div>
+{% elif not is_scanned %}
+<div class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4 text-sm text-slate-700">
+  Esta especie aún no está marcada como escaneada en tu recorrido. Escanéala con QR para desbloquear la imagen a color.
+</div>
+{% endif %}
+
+<div class="mt-4 grid gap-6 lg:grid-cols-5">
+  <section class="lg:col-span-2 rounded-3xl overflow-hidden border border-emerald-100 bg-white shadow-sm">
+    <div class="h-72 bg-slate-100">
+      {% if item.imagen %}
+      <img src="{{ url_for('static', filename=item.imagen) }}" alt="{{ item.nombre_comun }}"
+        class="h-full w-full object-cover"
+        style="{% if not is_scanned %}filter: grayscale(100%); opacity:.70;{% endif %}" />
+      {% else %}
+      <div class="h-full w-full grid place-items-center text-slate-500 text-sm">Sin imagen</div>
+      {% endif %}
+    </div>
+    <div class="p-4 text-xs text-slate-500">ID QR: <span class="font-mono">{{ item.qr_id }}</span></div>
+
+    {% if item.audio %}
+    <div class="px-4 pb-4">
+      <div class="rounded-2xl border border-slate-200 bg-white p-4">
+        <div class="text-sm font-semibold">Sonido / audio</div>
+        <audio class="mt-2 w-full" controls>
+          <source src="{{ url_for('static', filename=item.audio) }}" type="audio/mpeg">
+          Tu navegador no soporta audio.
+        </audio>
+      </div>
+    </div>
+    {% endif %}
+  </section>
+
+  <section class="lg:col-span-3 rounded-3xl border border-emerald-100 bg-white p-6 shadow-sm">
+    <div>
+      <h1 class="text-3xl font-semibold">{{ item.nombre_comun }}</h1>
+      <div class="mt-1 text-slate-600 italic">{{ item.nombre_cientifico }}</div>
+      {% if item.familia %}
+      <div class="mt-1 text-sm text-slate-600">Familia: <span class="font-semibold">{{ item.familia }}</span></div>
+      {% endif %}
+    </div>
+
+    <p class="mt-4 text-slate-700 leading-relaxed">{{ item.descripcion }}</p>
+
+    <div class="mt-6 grid gap-3 sm:grid-cols-2">
+      <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <div class="text-xs text-slate-500">Hábitat</div>
+        <div class="mt-1 text-sm">{{ item.habitat }}</div>
+      </div>
+      <div class="rounded-2xl border border-slate-200 bg-slate-50 p-4">
+        <div class="text-xs text-slate-500">Dieta</div>
+        <div class="mt-1 text-sm">{{ item.dieta }}</div>
+      </div>
+    </div>
+
+    {% if item.zonas %}
+    <div class="mt-4 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+      <div class="text-xs text-slate-500">Zonas donde se encuentra</div>
+      <div class="mt-1 text-sm">{{ item.zonas }}</div>
+    </div>
+    {% endif %}
+
+    {% if item.map_embed_url %}
+    <div class="mt-4 rounded-2xl border border-slate-200 bg-white p-4">
+      <div class="text-sm font-semibold">Mapa</div>
+      <div class="mt-2 overflow-hidden rounded-2xl border">
+        <iframe src="{{ item.map_embed_url }}" class="w-full h-64" loading="lazy"
+          referrerpolicy="no-referrer-when-downgrade"></iframe>
+      </div>
+    </div>
+    {% endif %}
+
+    {% if item.curiosidades %}
+    <div class="mt-6">
+      <div class="font-semibold">Curiosidades</div>
+      <ul class="mt-2 list-disc pl-5 text-sm text-slate-700 space-y-1">
+        {% for c in item.curiosidades %}
+        <li>{{ c }}</li>
+        {% endfor %}
+      </ul>
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+<!-- CHATBOT flotante -->
+<button id="chatFab"
+  class="fixed bottom-5 right-5 z-50 rounded-full bg-emerald-600 text-white shadow-lg hover:bg-emerald-700 px-4 py-3 text-sm font-medium">
+  💬 Pregunta
+</button>
+
+<div id="chatPanel" class="fixed bottom-5 right-5 z-50 w-[92vw] max-w-md hidden">
+  <div class="rounded-3xl border border-emerald-100 bg-white shadow-xl overflow-hidden">
+    <div class="flex items-center justify-between px-4 py-3 bg-emerald-50 border-b border-emerald-100">
+      <div>
+        <div class="font-semibold">Chat de la especie</div>
+        <div class="text-xs text-slate-600">Pregunta sobre: <span class="font-mono">{{ item.qr_id }}</span></div>
+      </div>
+      <button id="chatClose" class="rounded-xl px-3 py-1 text-sm hover:bg-emerald-100">✕</button>
+    </div>
+
+    <div id="chatMsgs" class="h-72 overflow-auto p-4 space-y-3 bg-white">
+      <div class="text-sm text-slate-600">Hola 👋 Pregúntame algo de esta especie.</div>
+      {% if not current_user.is_authenticated %}
+      <div class="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-2xl p-3">
+        Para usar el chat con memoria del recorrido, inicia sesión.
+      </div>
+      {% endif %}
+    </div>
+
+    <form id="chatForm" class="p-3 border-t border-slate-200 bg-white flex gap-2">
+      <input id="chatInput" placeholder="Escribe tu pregunta…" {% if not current_user.is_authenticated %}disabled{%
+        endif %}
+        class="flex-1 rounded-2xl border border-slate-200 px-4 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-200 disabled:bg-slate-100" />
+      <button id="chatSendBtn" {% if not current_user.is_authenticated %}disabled{% endif %}
+        class="rounded-2xl bg-emerald-600 px-4 py-2 text-white text-sm font-medium hover:bg-emerald-700 disabled:opacity-60">
+        Enviar
+      </button>
+    </form>
+  </div>
+</div>
+
+<script>
+  const SPECIES_INTERNAL_ID = "{{ item.id }}";
+  const IS_AUTH = {{ "true" if current_user.is_authenticated else "false" }};
+
+  const fab = document.getElementById("chatFab");
+  const panel = document.getElementById("chatPanel");
+  const closeBtn = document.getElementById("chatClose");
+  const form = document.getElementById("chatForm");
+  const input = document.getElementById("chatInput");
+  const msgs = document.getElementById("chatMsgs");
+
+  function escapeHtml(text) {
+    return (text || "")
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function normalizeAssistantText(text) {
+    return (text || "")
+      .replace(/\r\n/g, "\n")
+      .replace(/[ \t]+\n/g, "\n")
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/([.!?])\s+(?=\d+\.\s)/g, "$1\n")
+      .trim();
+  }
+
+  function formatInline(text) {
+    let html = escapeHtml(text || "");
+    html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/__(.+?)__/g, "<strong>$1</strong>");
+    html = html.replace(/\*\*/g, "");
+    return html;
+  }
+
+  function renderAssistantText(raw) {
+    const text = normalizeAssistantText(raw);
+    if (!text) return "";
+
+    const lines = text.split("\n");
+    const blocks = [];
+    let listItems = [];
+
+    const flushList = () => {
+      if (!listItems.length) return;
+      blocks.push(`<ul class="list-disc pl-5 space-y-1">${listItems.join("")}</ul>`);
+      listItems = [];
+    };
+
+    for (const originalLine of lines) {
+      const line = originalLine.trim();
+      if (!line) {
+        flushList();
+        continue;
+      }
+
+      const bulletMatch = line.match(/^(?:[-•]\s+|\d+\.\s+)(.*)$/);
+      if (bulletMatch) {
+        listItems.push(`<li>${formatInline(bulletMatch[1])}</li>`);
+        continue;
+      }
+
+      flushList();
+      blocks.push(`<p>${formatInline(line)}</p>`);
+    }
+
+    flushList();
+    return blocks.join('<div class="h-2"></div>');
+  }
+
+  function setBubbleText(bubble, role, text) {
+    if (role === "user") {
+      bubble.textContent = text;
+      return;
+    }
+    bubble.innerHTML = renderAssistantText(text);
+  }
+
+  function addMsg(role, text) {
+    const wrap = document.createElement("div");
+    const isUser = role === "user";
+    wrap.className = "flex " + (isUser ? "justify-end" : "justify-start");
+
+    const bubble = document.createElement("div");
+    bubble.className = "max-w-[85%] rounded-2xl px-3 py-2 text-sm leading-relaxed shadow-sm " +
+      (isUser
+        ? "bg-emerald-600 text-white whitespace-pre-wrap"
+        : "bg-slate-100 text-slate-800");
+
+    setBubbleText(bubble, role, text);
+    wrap.appendChild(bubble);
+    msgs.appendChild(wrap);
+    msgs.scrollTop = msgs.scrollHeight;
+    return bubble;
+  }
+
+  function toggle(open) {
+    panel.classList.toggle("hidden", !open);
+    fab.classList.toggle("hidden", open);
+    if (open && input) setTimeout(() => input.focus(), 50);
+  }
+
+  fab.addEventListener("click", () => toggle(true));
+  closeBtn.addEventListener("click", () => toggle(false));
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    if (!IS_AUTH) {
+      addMsg("assistant", "Inicia sesión para usar el chat con memoria.");
+      return;
+    }
+
+    const text = input.value.trim();
+    if (!text) return;
+
+    input.value = "";
+    addMsg("user", text);
+
+    const thinkingBubble = addMsg("assistant", "Pensando...");
+
+    try {
+      const r = await fetch("/api/chat_stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ species_id: SPECIES_INTERNAL_ID, message: text })
+      });
+
+      if (r.status === 401) {
+        setBubbleText(thinkingBubble, "assistant", "Debes iniciar sesión. Ve a 'Entrar' arriba.");
+        return;
+      }
+
+      if (!r.ok || !r.body) {
+        setBubbleText(thinkingBubble, "assistant", "Error: no se pudo iniciar el chat.");
+        return;
+      }
+
+      const reader = r.body.getReader();
+      const decoder = new TextDecoder("utf-8");
+      let full = "";
+
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        full += decoder.decode(value, { stream: true });
+        setBubbleText(thinkingBubble, "assistant", full);
+        msgs.scrollTop = msgs.scrollHeight;
+      }
+
+      if (!full.trim()) {
+        setBubbleText(thinkingBubble, "assistant", "No encontré una respuesta con el contexto disponible.");
+      }
+    } catch (err) {
+      setBubbleText(thinkingBubble, "assistant", "Error de red o del servidor.");
+    }
+  });
+</script>
+{% endblock %}
