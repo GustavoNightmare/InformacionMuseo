@@ -136,10 +136,14 @@ class ScanEvent(db.Model):
     __tablename__ = "scan_event"
 
     id = db.Column(db.Integer, primary_key=True)
-    species_id = db.Column(db.String(64), db.ForeignKey("species.id"), nullable=False)
-    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+    species_id = db.Column(
+        db.String(64), db.ForeignKey("species.id"), nullable=False, index=True
+    )
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
 
     qr_id = db.Column(db.String(64), nullable=False)
-    origin = db.Column(db.String(20), nullable=False)  # "qr", "web", "manual", etc.
+    origin = db.Column(db.String(20), nullable=False, index=True)
 
-    scanned_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    scanned_at = db.Column(
+        db.DateTime, default=datetime.utcnow, nullable=False, index=True
+    )

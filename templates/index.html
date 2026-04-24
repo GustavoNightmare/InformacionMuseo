@@ -75,7 +75,7 @@
           const id = normalizeToSpeciesId(decodedText);
           out.textContent = decodedText;
           await stop();
-          window.location.href = "/scan/" + encodeURIComponent(id);
+          window.location.href = "/scan/" + encodeURIComponent(id) + "?origin=qr";
         },
         () => { }
       );

@@ -53,7 +53,7 @@ import uuid
 import re
 import os
 import unicodedata
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -88,6 +88,287 @@ def normalize_scan_origin(raw: str | None) -> str:
         return "qr"
 
     return origin
+
+
+def build_scan_metrics_context():
+    """
+    Construye el contexto para las métricas de escaneo, usado tanto por la vista HTML
+    como por el endpoint JSON de métricas.
+
+    Retorna un diccionario con filtros, resumen, ranking y datos para gráficas.
+    """
+    from datetime import datetime, timedelta
+
+    # Parsear filtros desde request.args
+    start_date_str = request.args.get("start", "").strip()
+    end_date_str = request.args.get("end", "").strip()
+    species_filter = request.args.get("species_id", "").strip()
+    origin_filter = request.args.get("origin", "").strip().lower()
+
+    # Validar origin_filter
+    if origin_filter not in ALLOWED_SCAN_ORIGINS:
+        origin_filter = ""
+
+    # Validar species_filter
+    if species_filter:
+        exists_species = db.session.get(Species, species_filter)
+        if not exists_species:
+            species_filter = ""
+
+    # Establecer rango de fechas por defecto (últimos 30 días)
+    today = datetime.utcnow().date()
+    default_start = today - timedelta(days=30)
+    default_end = today
+
+    try:
+        if start_date_str:
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+        else:
+            start_date = default_start
+
+        if end_date_str:
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+        else:
+            end_date = default_end
+
+        # Asegurar que start <= end
+        if start_date > end_date:
+            start_date, end_date = end_date, start_date
+    except ValueError:
+        # Fechas inválidas, usar valores por defecto
+        start_date = default_start
+        end_date = default_end
+
+    # Asegurar que las fechas estén en formato string para retornar
+    start_date_str = start_date.strftime("%Y-%m-%d")
+    end_date_str = end_date.strftime("%Y-%m-%d")
+
+    # Construir consulta base para eventos de escaneo con filtros
+    query = ScanEvent.query
+
+    # Filtro por fecha (desde el inicio del día hasta el final del día)
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime = datetime.combine(end_date, datetime.max.time())
+    query = query.filter(
+        ScanEvent.scanned_at >= start_datetime, ScanEvent.scanned_at <= end_datetime
+    )
+
+    # Filtro por especie
+    if species_filter:
+        query = query.filter(ScanEvent.species_id == species_filter)
+
+    # Filtro por origen
+    if origin_filter and origin_filter in ALLOWED_SCAN_ORIGINS:
+        query = query.filter(ScanEvent.origin == origin_filter)
+
+    # Obtener todas las especies para el dropdown
+    species_options = Species.query.order_by(Species.nombre_comun.asc()).all()
+
+    # Construir filtros para el contexto
+    filters = {
+        "start": start_date_str,
+        "end": end_date_str,
+        "species_id": species_filter,
+        "origin": origin_filter,
+        "species_options": [
+            {
+                "id": species.id,
+                "qr_id": species.qr_id,
+                "nombre_comun": species.nombre_comun,
+                "nombre_cientifico": species.nombre_cientifico,
+            }
+            for species in species_options
+        ],
+    }
+
+    # Calcular métricas
+
+    # 1. Total de escaneos
+    total_scans = query.count()
+
+    # 2. Usuarios únicos (solo usuarios autenticados)
+    unique_users = db.session.query(
+        db.func.count(db.func.distinct(ScanEvent.user_id))
+    ).filter(
+        ScanEvent.scanned_at >= start_datetime,
+        ScanEvent.scanned_at <= end_datetime,
+        ScanEvent.user_id.isnot(None),
+    )
+    if species_filter:
+        unique_users = unique_users.filter(ScanEvent.species_id == species_filter)
+    if origin_filter and origin_filter in ALLOWED_SCAN_ORIGINS:
+        unique_users = unique_users.filter(ScanEvent.origin == origin_filter)
+
+    unique_users = unique_users.scalar() or 0
+
+    # 3. Especies escaneadas (distintas)
+    scanned_species_count = db.session.query(
+        db.func.count(db.func.distinct(ScanEvent.species_id))
+    ).filter(
+        ScanEvent.scanned_at >= start_datetime, ScanEvent.scanned_at <= end_datetime
+    )
+    if species_filter:
+        scanned_species_count = scanned_species_count.filter(
+            ScanEvent.species_id == species_filter
+        )
+    if origin_filter and origin_filter in ALLOWED_SCAN_ORIGINS:
+        scanned_species_count = scanned_species_count.filter(
+            ScanEvent.origin == origin_filter
+        )
+
+    scanned_species_count = scanned_species_count.scalar() or 0
+
+    # 4. Especie más escaneada
+    most_scanned_species = None
+    if total_scans > 0:
+        most_scanned_result = db.session.query(
+            ScanEvent.species_id, db.func.count(ScanEvent.id).label("scan_count")
+        ).filter(
+            ScanEvent.scanned_at >= start_datetime, ScanEvent.scanned_at <= end_datetime
+        )
+        if species_filter:
+            most_scanned_result = most_scanned_result.filter(
+                ScanEvent.species_id == species_filter
+            )
+        if origin_filter and origin_filter in ALLOWED_SCAN_ORIGINS:
+            most_scanned_result = most_scanned_result.filter(
+                ScanEvent.origin == origin_filter
+            )
+
+        most_scanned_result = (
+            most_scanned_result.group_by(ScanEvent.species_id)
+            .order_by(db.desc("scan_count"))
+            .first()
+        )
+
+        if most_scanned_result:
+            species_obj = db.session.get(Species, most_scanned_result.species_id)
+            if species_obj:
+                most_scanned_species = {
+                    "id": species_obj.id,
+                    "qr_id": species_obj.qr_id,
+                    "nombre_comun": species_obj.nombre_comun,
+                    "nombre_cientifico": species_obj.nombre_cientifico,
+                    "total_scans": most_scanned_result.scan_count,
+                }
+
+    # 5. Ranking por especie
+    ranking_query = db.session.query(
+        ScanEvent.species_id,
+        db.func.count(ScanEvent.id).label("total_scans"),
+        db.func.count(db.func.distinct(ScanEvent.user_id)).label("unique_users"),
+        db.func.max(ScanEvent.scanned_at).label("last_scan"),
+    ).filter(
+        ScanEvent.scanned_at >= start_datetime, ScanEvent.scanned_at <= end_datetime
+    )
+    if species_filter:
+        ranking_query = ranking_query.filter(ScanEvent.species_id == species_filter)
+    if origin_filter and origin_filter in ALLOWED_SCAN_ORIGINS:
+        ranking_query = ranking_query.filter(ScanEvent.origin == origin_filter)
+
+    ranking_results = (
+        ranking_query.group_by(ScanEvent.species_id)
+        .order_by(db.desc("total_scans"), ScanEvent.species_id)
+        .all()
+    )
+
+    # Formatear ranking
+    ranking = []
+    for result in ranking_results:
+        species_obj = db.session.get(Species, result.species_id)
+        if species_obj:
+            last_scan_formatted = ""
+            if result.last_scan:
+                last_scan_formatted = result.last_scan.strftime("%Y-%m-%d %H:%M")
+
+            ranking.append(
+                {
+                    "species_id": result.species_id,
+                    "qr_id": species_obj.qr_id,
+                    "nombre_comun": species_obj.nombre_comun,
+                    "nombre_cientifico": species_obj.nombre_cientifico,
+                    "total_scans": result.total_scans,
+                    "unique_users": result.unique_users,
+                    "last_scan": last_scan_formatted,
+                }
+            )
+
+    # 6. Datos para gráficas
+
+    # Gráfica diaria: conteo por día
+    daily_query = db.session.query(
+        db.func.date(ScanEvent.scanned_at).label("scan_date"),
+        db.func.count(ScanEvent.id).label("scan_count"),
+    ).filter(
+        ScanEvent.scanned_at >= start_datetime, ScanEvent.scanned_at <= end_datetime
+    )
+    if species_filter:
+        daily_query = daily_query.filter(ScanEvent.species_id == species_filter)
+    if origin_filter and origin_filter in ALLOWED_SCAN_ORIGINS:
+        daily_query = daily_query.filter(ScanEvent.origin == origin_filter)
+
+    daily_results = (
+        daily_query.group_by(db.func.date(ScanEvent.scanned_at))
+        .order_by(db.asc("scan_date"))
+        .all()
+    )
+
+    # Crear serie completa de fechas incluso si no hay escaneos
+    date_range = []
+    current_date = start_date
+    while current_date <= end_date:
+        date_range.append(current_date)
+        current_date += timedelta(days=1)
+
+    # Mapear resultados a fechas (convertir a string para evitar problemas con SQLite)
+    daily_data_map = {
+        str(result.scan_date): result.scan_count for result in daily_results
+    }
+    daily_dates = [date.strftime("%Y-%m-%d") for date in date_range]
+    daily_counts = [daily_data_map.get(date_str, 0) for date_str in daily_dates]
+
+    daily_chart_data = {"dates": daily_dates, "counts": daily_counts}
+
+    # Gráfica por origen
+    origin_query = db.session.query(
+        ScanEvent.origin, db.func.count(ScanEvent.id).label("count")
+    ).filter(
+        ScanEvent.scanned_at >= start_datetime, ScanEvent.scanned_at <= end_datetime
+    )
+    if species_filter:
+        origin_query = origin_query.filter(ScanEvent.species_id == species_filter)
+    if origin_filter and origin_filter in ALLOWED_SCAN_ORIGINS:
+        origin_query = origin_query.filter(ScanEvent.origin == origin_filter)
+
+    origin_results = origin_query.group_by(ScanEvent.origin).all()
+
+    # Crear mapa de resultados
+    origin_count_map = {result.origin: result.count for result in origin_results}
+
+    # Asegurar que siempre se incluyan las tres categorías
+    origin_labels = ["QR", "Web", "Manual"]
+    origin_values = [
+        origin_count_map.get("qr", 0),
+        origin_count_map.get("web", 0),
+        origin_count_map.get("manual", 0),
+    ]
+
+    origin_chart_data = {"labels": origin_labels, "counts": origin_values}
+
+    # Construir contexto final
+    context = {
+        "filters": filters,
+        "summary": {
+            "total_scans": total_scans,
+            "unique_users": unique_users,
+            "scanned_species_count": scanned_species_count,
+            "most_scanned_species": most_scanned_species,
+        },
+        "ranking": ranking,
+        "chart_data": {"daily": daily_chart_data, "origin": origin_chart_data},
+    }
+
+    return context
 
 
 def record_scan_event(
@@ -1056,6 +1337,10 @@ def ensure_schema_updates():
         db.session.execute(text("CREATE INDEX idx_scan_time ON scan_event(scanned_at)"))
         changed = True
 
+    if "idx_scan_origin" not in index_names:
+        db.session.execute(text("CREATE INDEX idx_scan_origin ON scan_event(origin)"))
+        changed = True
+
     species_rows = db.session.execute(
         text("SELECT id, qr_id FROM species ORDER BY id ASC")
     ).fetchall()
@@ -1864,7 +2149,7 @@ def register_post():
     db.session.commit()
 
     login_user(u)
-    flash("Cuenta creada correctamente ✅", "ok")
+    flash("Cuenta creada correctamente", "ok")
     return redirect(url_for("index"))
 
 
@@ -2381,9 +2666,9 @@ def reindex_all():
             except Exception as exc:
                 failed.append(f"{item.id}: {exc}")
 
-    print(f"✅ Reindexadas {ok}/{total} especies")
+    print(f"[OK] Reindexadas {ok}/{total} especies")
     if failed:
-        print("⚠️ Fallaron estas especies:")
+        print("[WARNING] Fallaron estas especies:")
         for line in failed:
             print(f" - {line}")
 
@@ -2611,7 +2896,7 @@ def init_db():
     with app.app_context():
         db.create_all()
         ensure_schema_updates()
-    print("✅ DB inicializada")
+    print("[OK] DB inicializada")
 
 
 @app.cli.command("create-admin")
@@ -2623,14 +2908,14 @@ def create_admin():
         db.create_all()
         ensure_schema_updates()
         if User.query.filter_by(username=username).first():
-            print("⚠️ Admin ya existe")
+            print("[INFO] Admin ya existe")
             return
         u = User(nombre="Administrador", edad=99, username=username, is_admin=True)
         u.set_password(password)
         db.session.add(u)
         db.session.commit()
 
-    print(f"✅ Admin creado: {username} / {password}")
+    print(f"[OK] Admin creado: {username} / {password}")
 
 
 @app.cli.command("create-user")
@@ -2644,14 +2929,14 @@ def create_user():
         db.create_all()
         ensure_schema_updates()
         if User.query.filter_by(username=username).first():
-            print("⚠️ Usuario ya existe")
+            print("[INFO] Usuario ya existe")
             return
         u = User(nombre=nombre, edad=edad, username=username, is_admin=False)
         u.set_password(password)
         db.session.add(u)
         db.session.commit()
 
-    print(f"✅ Usuario creado: {username} / {password}")
+    print(f"[OK] Usuario creado: {username} / {password}")
 
 
 @app.cli.command("seed")
@@ -2660,7 +2945,7 @@ def seed():
         db.create_all()
         ensure_schema_updates()
         if db.session.get(Species, "condor-001"):
-            print("⚠️ Seed ya aplicado")
+            print("[INFO] Seed ya aplicado")
             return
         sp = Species(
             id="condor-001",
@@ -2681,7 +2966,7 @@ def seed():
             get_vs().reindex_species(sp.id, sp.museo_info)
         except Exception:
             pass
-    print("✅ Seed aplicado")
+    print("[OK] Seed aplicado")
 
 
 if __name__ == "__main__":
