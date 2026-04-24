@@ -88,8 +88,8 @@
               Eliminar
             </button>
           </form>
-          <a class="rounded-xl border px-3 py-1 hover:bg-slate-50"
-            href="{{ url_for('especie', qr_id=s.qr_id) }}">Ver</a>
+<a class="rounded-xl border px-3 py-1 hover:bg-slate-50"
+            href="{{ url_for('especie', qr_id=s.qr_id) }}?origin=manual">Ver</a>
         </td>
       </tr>
       {% else %}

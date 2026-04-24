@@ -2312,6 +2312,12 @@ def especie(qr_id):
     if not item:
         abort(404)
 
+    # Registrar evento de escaneo si viene con origin (web o manual)
+    origin = request.args.get("origin", "").strip().lower()
+    if origin in {"web", "manual"}:
+        user_id = current_user.id if current_user.is_authenticated else None
+        record_scan_event(item, user_id=user_id, origin=origin)
+
     is_scanned = False
     if current_user.is_authenticated:
         is_scanned = (
