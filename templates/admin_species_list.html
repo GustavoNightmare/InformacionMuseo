@@ -68,33 +68,52 @@
         <th class="text-left p-3">Nombre científico</th>
         <th class="text-left p-3">Familia</th>
         <th class="text-left p-3">Orden</th>
+        <th class="text-left p-3">Última modificación</th>
+        <th class="text-left p-3">Modificado por</th>
+        <th class="text-left p-3">Última vista admin</th>
         <th class="text-left p-3">Acciones</th>
       </tr>
     </thead>
     <tbody>
-      {% for s in items %}
+      {% for item in admin_items %}
       <tr class="border-t align-top">
-        <td class="p-3 font-mono">{{ s.qr_id }}</td>
-        <td class="p-3">{{ s.nombre_comun }}</td>
-        <td class="p-3 text-slate-600">{{ s.nombre_cientifico or '—' }}</td>
-        <td class="p-3 text-slate-600">{{ s.familia or '—' }}</td>
-        <td class="p-3 text-slate-600">{{ s.orden or '—' }}</td>
+        <td class="p-3 font-mono">{{ item.species.qr_id }}</td>
+        <td class="p-3">{{ item.species.nombre_comun }}</td>
+        <td class="p-3 text-slate-600">{{ item.species.nombre_cientifico or '—' }}</td>
+        <td class="p-3 text-slate-600">{{ item.species.familia or '—' }}</td>
+        <td class="p-3 text-slate-600">{{ item.species.orden or '—' }}</td>
+        <td class="p-3 text-slate-600">
+          {% if item.updated_at %}
+          {{ item.updated_at.strftime('%Y-%m-%d %H:%M') }}
+          {% else %}
+          —
+          {% endif %}
+        </td>
+        <td class="p-3 text-slate-600">{{ item.updated_by_name }}</td>
+        <td class="p-3 text-slate-600">
+          {% if item.last_admin_viewed_at %}
+          {{ item.last_admin_viewed_at.strftime('%Y-%m-%d %H:%M') }}
+          <div class="text-xs text-slate-400">{{ item.last_admin_viewed_by }}</div>
+          {% else %}
+          —
+          {% endif %}
+        </td>
         <td class="p-3 flex gap-2 flex-wrap">
           <a class="rounded-xl border px-3 py-1 hover:bg-slate-50"
-            href="{{ url_for('admin_species_edit', species_id=s.id) }}">Editar</a>
-          <form method="post" action="{{ url_for('admin_species_delete', species_id=s.id) }}"
+            href="{{ url_for('admin_species_edit', species_id=item.species.id) }}">Editar</a>
+          <form method="post" action="{{ url_for('admin_species_delete', species_id=item.species.id) }}"
             onsubmit="return confirm('¿Eliminar esta especie?');">
             <button class="rounded-xl border border-rose-200 bg-rose-50 px-3 py-1 text-rose-700 hover:bg-rose-100">
               Eliminar
             </button>
           </form>
-<a class="rounded-xl border px-3 py-1 hover:bg-slate-50"
-            href="{{ url_for('especie', qr_id=s.qr_id) }}?origin=manual">Ver</a>
+          <a class="rounded-xl border px-3 py-1 hover:bg-slate-50"
+            href="{{ url_for('especie', qr_id=item.species.qr_id) }}?origin=manual">Ver</a>
         </td>
       </tr>
       {% else %}
       <tr>
-        <td colspan="6" class="p-6 text-center text-slate-500">
+        <td colspan="9" class="p-6 text-center text-slate-500">
           No se encontraron especies con esos filtros.
         </td>
       </tr>

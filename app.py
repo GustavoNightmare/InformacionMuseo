@@ -1,6 +1,16 @@
 from rag import build_structured_context, classify_question_scope
 from llm import LLMClient
-from models import db, User, Species, MuseumDoc, Visit, ChatTurn, QRStyle, ScanEvent
+from models import (
+    db,
+    User,
+    Species,
+    MuseumDoc,
+    Visit,
+    ChatTurn,
+    QRStyle,
+    ScanEvent,
+    SpeciesAuditLog,
+)
 import docx
 import json
 from PyPDF2 import PdfReader
@@ -396,6 +406,141 @@ def record_scan_event(
     # Guardar en base de datos
     db.session.add(scan_event)
     db.session.commit()
+
+
+def record_species_audit(
+    species_id: str,
+    action: str,
+    user_id: int | None = None,
+    field_name: str | None = None,
+    old_value: str | None = None,
+    new_value: str | None = None,
+    notes: str | None = None,
+    species_name_snapshot: str | None = None,
+    species_scientific_name_snapshot: str | None = None,
+    qr_id_snapshot: str | None = None,
+) -> SpeciesAuditLog:
+    """
+    Registra una entrada en el log de auditoría de especies.
+    NO hace commit. El commit se hace en la ruta que llama.
+    """
+    log = SpeciesAuditLog()
+    log.species_id = species_id
+    log.user_id = user_id
+    log.action = action
+    log.field_name = field_name
+    log.old_value = old_value
+    log.new_value = new_value
+    log.created_at = datetime.utcnow()
+    log.notes = notes
+    log.species_name_snapshot = species_name_snapshot
+    log.species_scientific_name_snapshot = species_scientific_name_snapshot
+    log.qr_id_snapshot = qr_id_snapshot
+    db.session.add(log)
+    return log
+
+
+def log_species_created(species: Species, user_id: int | None):
+    """Registra la creación de una especie en el audit log."""
+    record_species_audit(
+        species_id=species.id,
+        action="created",
+        user_id=user_id,
+        species_name_snapshot=species.nombre_comun,
+        species_scientific_name_snapshot=species.nombre_cientifico,
+        qr_id_snapshot=species.qr_id,
+        notes=f"Especie creada",
+    )
+
+
+def log_species_updated(
+    species_before: Species, species_after: Species, user_id: int | None
+):
+    """
+    Compara dos versiones de una especie y registra los cambios.
+    NO hace commit. Agrega todos los logs y retorna.
+    """
+    fields_to_check = [
+        "qr_id",
+        "nombre_comun",
+        "nombre_cientifico",
+        "familia",
+        "orden",
+        "descripcion",
+        "habitat",
+        "dieta",
+        "zonas",
+        "museo_info",
+        "imagen",
+        "audio",
+        "curiosidades_json",
+        "thumb_pos_x",
+        "thumb_pos_y",
+        "thumb_zoom",
+    ]
+
+    # Snapshots de la especie actual
+    snapshot_name = species_after.nombre_comun
+    snapshot_scientific = species_after.nombre_cientifico
+    snapshot_qr = species_after.qr_id
+
+    for field in fields_to_check:
+        old_val = getattr(species_before, field, None) or ""
+        new_val = getattr(species_after, field, None) or ""
+
+        if str(old_val) != str(new_val):
+            record_species_audit(
+                species_id=species_after.id,
+                action="updated",
+                user_id=user_id,
+                field_name=field,
+                old_value=str(old_val) if old_val else "",
+                new_value=str(new_val) if new_val else "",
+                species_name_snapshot=snapshot_name,
+                species_scientific_name_snapshot=snapshot_scientific,
+                qr_id_snapshot=snapshot_qr,
+            )
+
+
+def log_species_viewed_admin(species_id: str, species: Species, user_id: int):
+    """
+    Registra que un admin vio una especie. Evita duplicados dentro de 5 minutos.
+    NO hace commit. Retorna el log o None si es duplicado.
+    """
+    from datetime import timedelta
+
+    five_minutes_ago = datetime.utcnow() - timedelta(minutes=5)
+
+    recent_view = SpeciesAuditLog.query.filter(
+        SpeciesAuditLog.species_id == species_id,
+        SpeciesAuditLog.user_id == user_id,
+        SpeciesAuditLog.action == "viewed_admin",
+        SpeciesAuditLog.created_at >= five_minutes_ago,
+    ).first()
+
+    if not recent_view:
+        return record_species_audit(
+            species_id=species_id,
+            action="viewed_admin",
+            user_id=user_id,
+            species_name_snapshot=species.nombre_comun,
+            species_scientific_name_snapshot=species.nombre_cientifico,
+            qr_id_snapshot=species.qr_id,
+        )
+    return None
+
+
+def log_species_deleted(species: Species, user_id: int | None):
+    """Registra la eliminación de una especie. No hace commit."""
+    record_species_audit(
+        species_id=species.id,
+        action="deleted",
+        user_id=user_id,
+        species_name_snapshot=species.nombre_comun,
+        species_scientific_name_snapshot=species.nombre_cientifico,
+        qr_id_snapshot=species.qr_id,
+        notes=f"Especie eliminada",
+    )
 
 
 def build_species_tts_payload(species: Species) -> dict:
@@ -1021,11 +1166,44 @@ def get_species_admin_filters():
         .all()
     ]
 
+    admin_items = []
+    for s in items:
+        updated_by_name = "-"
+        if s.updated_by_id:
+            user = db.session.get(User, s.updated_by_id)
+            if user:
+                updated_by_name = user.nombre
+
+        last_view_log = (
+            SpeciesAuditLog.query.filter_by(species_id=s.id, action="viewed_admin")
+            .order_by(SpeciesAuditLog.created_at.desc())
+            .first()
+        )
+        last_admin_viewed_at = None
+        last_admin_viewed_by = "-"
+        if last_view_log:
+            last_admin_viewed_at = last_view_log.created_at
+            if last_view_log.user_id:
+                view_user = db.session.get(User, last_view_log.user_id)
+                if view_user:
+                    last_admin_viewed_by = view_user.nombre
+
+        admin_items.append(
+            {
+                "species": s,
+                "updated_at": s.updated_at,
+                "updated_by_name": updated_by_name,
+                "last_admin_viewed_at": last_admin_viewed_at,
+                "last_admin_viewed_by": last_admin_viewed_by,
+            }
+        )
+
     return {
         "q": q,
         "familia": familia,
         "orden": orden,
         "items": items,
+        "admin_items": admin_items,
         "familias": familias,
         "ordenes": ordenes,
     }
@@ -1339,6 +1517,101 @@ def ensure_schema_updates():
 
     if "idx_scan_origin" not in index_names:
         db.session.execute(text("CREATE INDEX idx_scan_origin ON scan_event(origin)"))
+        changed = True
+
+    # Migraciones de auditoria para Species
+    if "created_at" not in cols:
+        db.session.execute(text("ALTER TABLE species ADD COLUMN created_at DATETIME"))
+        changed = True
+
+    if "updated_at" not in cols:
+        db.session.execute(text("ALTER TABLE species ADD COLUMN updated_at DATETIME"))
+        changed = True
+
+    if "updated_by_id" not in cols:
+        db.session.execute(
+            text(
+                "ALTER TABLE species ADD COLUMN updated_by_id INTEGER REFERENCES user(id)"
+            )
+        )
+        changed = True
+
+    # Verificar si la tabla species_audit_log existe
+    audit_table_check = db.session.execute(
+        text("PRAGMA table_info(species_audit_log)")
+    ).fetchall()
+    if not audit_table_check:
+        db.session.execute(
+            text("""
+            CREATE TABLE species_audit_log (
+                id INTEGER PRIMARY KEY,
+                species_id VARCHAR(64) NOT NULL,
+                user_id INTEGER,
+                action VARCHAR(20) NOT NULL,
+                field_name VARCHAR(64),
+                old_value TEXT,
+                new_value TEXT,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                notes TEXT,
+                FOREIGN KEY (species_id) REFERENCES species(id),
+                FOREIGN KEY (user_id) REFERENCES user(id)
+            )
+        """)
+        )
+        changed = True
+
+    # Índices para species_audit_log
+    audit_index_check = db.session.execute(
+        text("PRAGMA index_list(species_audit_log)")
+    ).fetchall()
+    audit_index_names = {row[1] for row in audit_index_check}
+
+    if "idx_audit_species" not in audit_index_names:
+        db.session.execute(
+            text("CREATE INDEX idx_audit_species ON species_audit_log(species_id)")
+        )
+        changed = True
+
+    if "idx_audit_user" not in audit_index_names:
+        db.session.execute(
+            text("CREATE INDEX idx_audit_user ON species_audit_log(user_id)")
+        )
+        changed = True
+
+    if "idx_audit_action" not in audit_index_names:
+        db.session.execute(
+            text("CREATE INDEX idx_audit_action ON species_audit_log(action)")
+        )
+        changed = True
+
+    if "idx_audit_time" not in audit_index_names:
+        db.session.execute(
+            text("CREATE INDEX idx_audit_time ON species_audit_log(created_at)")
+        )
+        changed = True
+
+    # Añadir columnas de snapshot si no existen
+    audit_cols = {row[1] for row in audit_table_check}
+    if "species_name_snapshot" not in audit_cols:
+        db.session.execute(
+            text(
+                "ALTER TABLE species_audit_log ADD COLUMN species_name_snapshot VARCHAR(200)"
+            )
+        )
+        changed = True
+
+    if "species_scientific_name_snapshot" not in audit_cols:
+        db.session.execute(
+            text(
+                "ALTER TABLE species_audit_log ADD COLUMN species_scientific_name_snapshot VARCHAR(200)"
+            )
+        )
+        changed = True
+
+    if "qr_id_snapshot" not in audit_cols:
+        db.session.execute(
+            text("ALTER TABLE species_audit_log ADD COLUMN qr_id_snapshot VARCHAR(64)")
+        )
         changed = True
 
     species_rows = db.session.execute(
@@ -2318,6 +2591,14 @@ def especie(qr_id):
         user_id = current_user.id if current_user.is_authenticated else None
         record_scan_event(item, user_id=user_id, origin=origin)
 
+    # Registrar auditoría de vista admin (solo si es admin autenticado)
+    if origin == "manual" and current_user.is_authenticated and current_user.is_admin:
+        try:
+            log_species_viewed_admin(item.id, item, current_user.id)
+            db.session.commit()
+        except Exception:
+            pass
+
     is_scanned = False
     if current_user.is_authenticated:
         is_scanned = (
@@ -2456,6 +2737,12 @@ def admin_species_new_post():
         flash(str(ve), "error")
         return redirect(url_for("admin_species_new"))
 
+    # Registrar auditoría ANTES del commit
+    try:
+        log_species_created(sp, current_user.id)
+    except Exception:
+        pass
+
     db.session.commit()
 
     try:
@@ -2495,6 +2782,22 @@ def admin_species_edit_post(species_id):
     if not item:
         abort(404)
 
+    # Guardar estado original para auditoría
+    item_before = Species()
+    item_before.id = item.id
+    item_before.qr_id = item.qr_id
+    item_before.nombre_comun = item.nombre_comun
+    item_before.nombre_cientifico = item.nombre_cientifico
+    item_before.familia = item.familia
+    item_before.orden = item.orden
+    item_before.descripcion = item.descripcion
+    item_before.habitat = item.habitat
+    item_before.dieta = item.dieta
+    item_before.zonas = item.zonas
+    item_before.museo_info = item.museo_info
+    item_before.imagen = item.imagen
+    item_before.audio = item.audio
+
     nombre_comun = (request.form.get("nombre_comun") or "").strip()
     if not nombre_comun:
         flash("Nombre común es obligatorio.", "error")
@@ -2515,8 +2818,18 @@ def admin_species_edit_post(species_id):
     item.thumb_pos_y = clamp_percent(request.form.get("thumb_pos_y"), 50)
     item.thumb_zoom = clamp_zoom(request.form.get("thumb_zoom"), 100)
 
+    # Actualizar auditoría
+    item.updated_at = datetime.utcnow()
+    item.updated_by_id = current_user.id
+
     curiosidades_raw = (request.form.get("curiosidades") or "").strip()
     item.curiosidades = [x.strip() for x in curiosidades_raw.split("\n") if x.strip()]
+
+    # Registrar auditoría ANTES del commit (sin commit interno)
+    try:
+        log_species_updated(item_before, item, current_user.id)
+    except Exception:
+        pass
 
     try:
         handle_uploads_for_species(item.id, item)
@@ -2550,6 +2863,12 @@ def admin_species_delete(species_id):
         abort(404)
 
     old_qr_id = item.qr_id
+
+    # Registrar eliminación en auditoría ANTES de borrar
+    try:
+        log_species_deleted(item, current_user.id)
+    except Exception:
+        pass
 
     MuseumDoc.query.filter_by(species_id=item.id).delete()
     db.session.delete(item)
@@ -2806,6 +3125,163 @@ def api_admin_metrics():
     admin_required()
     metrics_context = build_scan_metrics_context()
     return jsonify(metrics_context)
+
+
+def build_audit_context():
+    """Construye el contexto para la vista de auditoría."""
+    from datetime import datetime, timedelta
+
+    # Filtros
+    species_filter = request.args.get("species_id", "").strip()
+    action_filter = request.args.get("action", "").strip()
+    user_filter = request.args.get("user_id", "").strip()
+    start_date_str = request.args.get("start", "").strip()
+    end_date_str = request.args.get("end", "").strip()
+
+    # Validar action_filter
+    valid_actions = {"created", "updated", "deleted", "viewed_admin"}
+    if action_filter not in valid_actions:
+        action_filter = ""
+
+    # Validar user_filter
+    if user_filter:
+        try:
+            user_id_int = int(user_filter)
+            user_exists = db.session.get(User, user_id_int)
+            if not user_exists:
+                user_filter = ""
+        except (ValueError, TypeError):
+            user_filter = ""
+
+    # Validar species_filter (verificar que exista o tenga logs históricos)
+    if species_filter:
+        species_exists = db.session.get(Species, species_filter)
+        has_logs = (
+            SpeciesAuditLog.query.filter_by(species_id=species_filter).first()
+            is not None
+        )
+        if not species_exists and not has_logs:
+            species_filter = ""
+
+    # Fecha por defecto: últimos 30 días
+    today = datetime.utcnow().date()
+    default_start = today - timedelta(days=30)
+    default_end = today
+
+    try:
+        if start_date_str:
+            start_date = datetime.strptime(start_date_str, "%Y-%m-%d").date()
+        else:
+            start_date = default_start
+
+        if end_date_str:
+            end_date = datetime.strptime(end_date_str, "%Y-%m-%d").date()
+        else:
+            end_date = default_end
+
+        if start_date > end_date:
+            start_date, end_date = end_date, start_date
+    except ValueError:
+        start_date = default_start
+        end_date = default_end
+
+    start_datetime = datetime.combine(start_date, datetime.min.time())
+    end_datetime = datetime.combine(end_date, datetime.max.time())
+
+    # Query base
+    query = SpeciesAuditLog.query
+
+    if species_filter:
+        query = query.filter(SpeciesAuditLog.species_id == species_filter)
+
+    if action_filter:
+        query = query.filter(SpeciesAuditLog.action == action_filter)
+
+    if user_filter:
+        try:
+            user_id_int = int(user_filter)
+            query = query.filter(SpeciesAuditLog.user_id == user_id_int)
+        except ValueError:
+            pass
+
+    query = query.filter(
+        SpeciesAuditLog.created_at >= start_datetime,
+        SpeciesAuditLog.created_at <= end_datetime,
+    )
+
+    logs = query.order_by(SpeciesAuditLog.created_at.desc()).all()
+
+    # Especies para dropdown
+    species_options = Species.query.order_by(Species.nombre_comun.asc()).all()
+
+    # Usuarios admins para dropdown
+    admin_users = User.query.filter_by(is_admin=True).order_by(User.nombre.asc()).all()
+
+    # Formatear logs (usar snapshots si la especie no existe)
+    formatted_logs = []
+    for log in logs:
+        species = db.session.get(Species, log.species_id)
+        user = db.session.get(User, log.user_id) if log.user_id else None
+
+        # Usar snapshot si la especie no existe
+        if species:
+            display_name = species.nombre_comun
+            display_scientific = species.nombre_cientifico
+            display_qr = species.qr_id
+        else:
+            display_name = log.species_name_snapshot or "Desconocida"
+            display_scientific = log.species_scientific_name_snapshot
+            display_qr = log.qr_id_snapshot
+
+        formatted_logs.append(
+            {
+                "id": log.id,
+                "species_id": log.species_id,
+                "species_name": display_name,
+                "species_scientific_name": display_scientific,
+                "qr_id": display_qr,
+                "action": log.action,
+                "field_name": log.field_name,
+                "old_value": log.old_value,
+                "new_value": log.new_value,
+                "created_at": log.created_at.strftime("%Y-%m-%d %H:%M:%S"),
+                "user_id": log.user_id,
+                "user_name": user.nombre if user else "Sistema",
+                "notes": log.notes,
+            }
+        )
+
+    return {
+        "filters": {
+            "species_id": species_filter,
+            "action": action_filter,
+            "user_id": user_filter,
+            "start": start_date.strftime("%Y-%m-%d"),
+            "end": end_date.strftime("%Y-%m-%d"),
+            "species_options": [
+                {"id": s.id, "nombre_comun": s.nombre_comun} for s in species_options
+            ],
+            "user_options": [{"id": u.id, "nombre": u.nombre} for u in admin_users],
+        },
+        "logs": formatted_logs,
+        "total": len(formatted_logs),
+    }
+
+
+@app.get("/admin/especies/auditoria")
+@login_required
+def admin_especies_auditoria():
+    admin_required()
+    context = build_audit_context()
+    return render_template("admin_especies_auditoria.html", **context)
+
+
+@app.get("/api/admin/especies/auditoria")
+@login_required
+def api_admin_especies_auditoria():
+    admin_required()
+    context = build_audit_context()
+    return jsonify(context)
 
 
 # --------- CHAT API (RAG) ---------

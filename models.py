@@ -56,6 +56,13 @@ class Species(db.Model):
     thumb_pos_y = db.Column(db.Integer, nullable=False, default=50)
     thumb_zoom = db.Column(db.Integer, nullable=False, default=100)
 
+    # Auditoria
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(
+        db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+    updated_by_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+
     @property
     def curiosidades(self):
         if not self.curiosidades_json:
@@ -147,3 +154,32 @@ class ScanEvent(db.Model):
     scanned_at = db.Column(
         db.DateTime, default=datetime.utcnow, nullable=False, index=True
     )
+
+
+class SpeciesAuditLog(db.Model):
+    """
+    Registro de auditoría para cambios y accesos a especies.
+    Separa la auditoría administrativa de las métricas de escaneo.
+    Los snapshots permiten ver información aunque la especie haya sido eliminada.
+    """
+
+    __tablename__ = "species_audit_log"
+
+    id = db.Column(db.Integer, primary_key=True)
+    species_id = db.Column(db.String(64), nullable=False, index=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True, index=True)
+
+    action = db.Column(db.String(20), nullable=False, index=True)
+    field_name = db.Column(db.String(64), nullable=True)
+    old_value = db.Column(db.Text, nullable=True)
+    new_value = db.Column(db.Text, nullable=True)
+
+    created_at = db.Column(
+        db.DateTime, default=datetime.utcnow, nullable=False, index=True
+    )
+    notes = db.Column(db.Text, nullable=True)
+
+    # Snapshots para preservar info aunque la especie sea eliminada
+    species_name_snapshot = db.Column(db.String(200), nullable=True)
+    species_scientific_name_snapshot = db.Column(db.String(200), nullable=True)
+    qr_id_snapshot = db.Column(db.String(64), nullable=True)
