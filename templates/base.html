@@ -36,6 +36,7 @@
         {% if current_user.is_authenticated and current_user.is_admin %}
         <a href="{{ url_for('admin_species_list') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Admin</a>
         <a href="{{ url_for('admin_qr_list') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Gestión QR</a>
+        <a href="{{ url_for('admin_metrics') }}" class="px-3 py-2 rounded-xl text-sm hover:bg-emerald-50">Métricas</a>
         {% endif %}
 
         <div class="w-px h-6 bg-slate-200 mx-1"></div>

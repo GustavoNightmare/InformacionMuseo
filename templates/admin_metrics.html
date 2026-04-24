@@ -1,0 +1,232 @@
+{% extends "base.html" %}
+{% block title %}Admin | Métricas de Escaneo{% endblock %}
+{% block content %}
+<div class="max-w-6xl mx-auto px-4 py-6">
+  <div class="flex items-end justify-between flex-wrap gap-3 mb-6">
+    <div>
+      <h1 class="text-2xl font-semibold">Métricas de Escaneo</h1>
+      <p class="text-sm text-slate-600">Análisis de interacción con especies escaneadas</p>
+    </div>
+  </div>
+
+  <!-- Filtros -->
+  <form method="get" class="mb-6 grid gap-4 rounded-3xl border border-emerald-100 bg-white p-4 shadow-sm md:grid-cols-4">
+    <div>
+      <label class="mb-1 block text-sm font-medium text-slate-700">Fecha Inicio</label>
+      <input type="date" name="start" value="{{ filters.start }}" 
+             class="w-full rounded-2xl border border-slate-300 px-4 py-2 outline-none focus:border-emerald-500">
+    </div>
+    
+    <div>
+      <label class="mb-1 block text-sm font-medium text-slate-700">Fecha Fin</label>
+      <input type="date" name="end" value="{{ filters.end }}" 
+             class="w-full rounded-2xl border border-slate-300 px-4 py-2 outline-none focus:border-emerald-500">
+    </div>
+    
+    <div>
+      <label class="mb-1 block text-sm font-medium text-slate-700">Especie</label>
+      <select name="species_id" 
+              class="w-full rounded-2xl border border-slate-300 px-4 py-2 outline-none focus:border-emerald-500">
+        <option value="">Todas</option>
+        {% for species in filters.species_options %}
+        <option value="{{ species.id }}" {% if filters.species_id == species.id %}selected{% endif %}>
+          {{ species.nombre_comun }}
+        </option>
+        {% endfor %}
+      </select>
+    </div>
+    
+    <div>
+      <label class="mb-1 block text-sm font-medium text-slate-700">Origen</label>
+      <select name="origin" 
+              class="w-full rounded-2xl border border-slate-300 px-4 py-2 outline-none focus:border-emerald-500">
+        <option value="">Todos</option>
+        <option value="qr" {% if filters.origin == "qr" %}selected{% endif %}>QR</option>
+        <option value="web" {% if filters.origin == "web" %}selected{% endif %}>Web</option>
+        <option value="manual" {% if filters.origin == "manual" %}selected{% endif %}>Manual</option>
+      </select>
+    </div>
+    
+    <div class="md:col-span-4 flex flex-wrap items-center justify-between gap-3">
+      <div class="text-sm text-slate-600">
+        Mostrando datos del {{ filters.start }} al {{ filters.end }}
+      </div>
+      
+      <div class="flex gap-2">
+        <a href="{{ url_for('admin_metrics') }}" class="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50">
+          Limpiar
+        </a>
+        <button type="submit"
+          class="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">
+          Filtrar
+        </button>
+      </div>
+    </div>
+  </form>
+
+  <!-- Tarjetas Resumen -->
+  <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">
+    <div class="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm">
+      <div class="text-sm text-slate-600">Total Escaneos</div>
+      <div class="text-2xl font-bold mt-1">{{ summary.total_scans }}</div>
+    </div>
+    
+    <div class="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm">
+      <div class="text-sm text-slate-600">Usuarios Únicos</div>
+      <div class="text-2xl font-bold mt-1">{{ summary.unique_users }}</div>
+    </div>
+    
+    <div class="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm">
+      <div class="text-sm text-slate-600">Especies Escaneadas</div>
+      <div class="text-2xl font-bold mt-1">{{ summary.scanned_species_count }}</div>
+    </div>
+    
+    <div class="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm">
+      <div class="text-sm text-slate-600">Más Escaneada</div>
+      <div class="text-lg font-bold mt-1 truncate">
+        {% if summary.most_scanned_species %}
+          {{ summary.most_scanned_species.nombre_comun }}
+        {% else %}
+          -
+        {% endif %}
+      </div>
+      <div class="text-sm text-slate-500">
+        {% if summary.most_scanned_species %}
+          {{ summary.most_scanned_species.total_scans }} escaneos
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- Gráficas -->
+  <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
+    <!-- Gráfica de Tendencia Diaria -->
+    <div class="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm">
+      <h3 class="font-medium mb-4">Tendencia Diaria</h3>
+      <canvas id="dailyChart" height="200"></canvas>
+    </div>
+    
+    <!-- Gráfica de Distribución por Origen -->
+    <div class="rounded-3xl border border-emerald-100 bg-white p-5 shadow-sm">
+      <h3 class="font-medium mb-4">Distribución por Origen</h3>
+      <canvas id="originChart" height="200"></canvas>
+    </div>
+  </div>
+
+  <!-- Ranking por Especie -->
+  <div class="rounded-3xl border border-emerald-100 bg-white shadow-sm overflow-hidden mb-6">
+    <div class="p-5 border-b border-emerald-100">
+      <h3 class="font-medium">Ranking por Especie</h3>
+    </div>
+    <div class="overflow-x-auto">
+      <table class="w-full text-sm">
+        <thead class="bg-emerald-50 text-slate-700">
+          <tr>
+            <th class="text-left p-3">Posición</th>
+            <th class="text-left p-3">Nombre Común</th>
+            <th class="text-left p-3">Nombre Científico</th>
+            <th class="text-left p-3">QR ID</th>
+            <th class="text-left p-3">Escaneos</th>
+            <th class="text-left p-3">Usuarios Únicos</th>
+            <th class="text-left p-3">Último Escaneo</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for item in ranking %}
+          <tr class="border-t align-top">
+            <td class="p-3 font-medium">{{ loop.index }}</td>
+            <td class="p-3">{{ item.nombre_comun }}</td>
+            <td class="p-3 text-slate-600">{{ item.nombre_cientifico or '—' }}</td>
+            <td class="p-3 font-mono text-slate-600">{{ item.qr_id }}</td>
+            <td class="p-3">{{ item.total_scans }}</td>
+            <td class="p-3">{{ item.unique_users }}</td>
+            <td class="p-3 text-slate-600">{{ item.last_scan or '—' }}</td>
+          </tr>
+          {% else %}
+          <tr>
+            <td colspan="7" class="p-6 text-center text-slate-500">
+              No se encontraron escaneos con estos filtros.
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- Chart.js CDN -->
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script>
+  // Datos para las gráficas
+  const dailyData = {
+    labels: {{ chart_data.daily.dates|tojson }},
+    datasets: [{
+      label: 'Escaneos Diarios',
+      data: {{ chart_data.daily.counts|tojson }},
+      borderColor: '#059669',
+      backgroundColor: 'rgba(5, 150, 105, 0.1)',
+      borderWidth: 2,
+      fill: true,
+      tension: 0.4
+    }]
+  };
+
+  const originData = {
+    labels: {{ chart_data.origin.labels|tojson }},
+    datasets: [{
+      label: 'Cantidad por Origen',
+      data: {{ chart_data.origin.counts|tojson }},
+      backgroundColor: [
+        '#059669',
+        '#10b981',
+        '#34d399'
+      ]
+    }]
+  };
+
+  // Configuración de gráficas
+  const dailyConfig = {
+    type: 'line',
+    data: dailyData,
+    options: {
+      responsive: true,
+      plugins: {
+        legend: {
+          display: false
+        }
+      },
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: {
+            precision: 0
+          }
+        }
+      }
+    }
+  };
+
+  const originConfig = {
+    type: 'doughnut',
+    data: originData,
+    options: {
+      responsive: true,
+      plugins: {
+        legend: {
+          position: 'bottom'
+        }
+      }
+    }
+  };
+
+  // Renderizar gráficas
+  document.addEventListener('DOMContentLoaded', function() {
+    const dailyCtx = document.getElementById('dailyChart').getContext('2d');
+    const originCtx = document.getElementById('originChart').getContext('2d');
+    
+    new Chart(dailyCtx, dailyConfig);
+    new Chart(originCtx, originConfig);
+  });
+</script>
+{% endblock %}

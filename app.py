@@ -1,6 +1,6 @@
 from rag import build_structured_context, classify_question_scope
 from llm import LLMClient
-from models import db, User, Species, MuseumDoc, Visit, ChatTurn, QRStyle
+from models import db, User, Species, MuseumDoc, Visit, ChatTurn, QRStyle, ScanEvent
 import docx
 import json
 from PyPDF2 import PdfReader
@@ -11,24 +11,49 @@ import qrcode
 from qrcode.image.styledpil import StyledPilImage
 from qrcode.image.styles.colormasks import SolidFillColorMask
 from vector_store import VectorStore
+
 try:
     from qrcode.image.styles.moduledrawers.pil import (
-        SquareModuleDrawer, RoundedModuleDrawer, CircleModuleDrawer, GappedSquareModuleDrawer,
+        SquareModuleDrawer,
+        RoundedModuleDrawer,
+        CircleModuleDrawer,
+        GappedSquareModuleDrawer,
     )
 except ImportError:
     from qrcode.image.styles.moduledrawers import (
-        SquareModuleDrawer, RoundedModuleDrawer, CircleModuleDrawer, GappedSquareModuleDrawer,
+        SquareModuleDrawer,
+        RoundedModuleDrawer,
+        CircleModuleDrawer,
+        GappedSquareModuleDrawer,
     )
 
 from werkzeug.utils import secure_filename
-from flask_login import LoginManager, login_user, logout_user, login_required, current_user
-from flask import Flask, render_template, redirect, url_for, request, abort, jsonify, flash, Response, stream_with_context
+from flask_login import (
+    LoginManager,
+    login_user,
+    logout_user,
+    login_required,
+    current_user,
+)
+from flask import (
+    Flask,
+    render_template,
+    redirect,
+    url_for,
+    request,
+    abort,
+    jsonify,
+    flash,
+    Response,
+    stream_with_context,
+)
 import requests
 import urllib.parse
 import uuid
 import re
 import os
 import unicodedata
+from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -39,6 +64,7 @@ ID_RE = re.compile(r"^[a-z0-9-_]+$")
 ALLOWED_DOCS = {"pdf", "docx", "txt"}
 ALLOWED_AUDIO = {"mp3"}
 ALLOWED_IMAGES = {"jpg", "jpeg", "png", "webp"}
+ALLOWED_SCAN_ORIGINS = {"qr", "web", "manual"}
 
 UPLOAD_DIR = os.path.join("static", "uploads")
 
@@ -47,6 +73,48 @@ MUSEO_TTS_INTERNAL_BASE_URL = (
     or os.getenv("MUSEO_TTS_PUBLIC_BASE_URL")
     or ""
 ).rstrip("/")
+
+
+def normalize_scan_origin(raw: str | None) -> str:
+    """
+    Normaliza y valida el origen de un escaneo.
+    Valores permitidos: qr, web, manual
+    """
+    if not raw:
+        return "qr"
+
+    origin = raw.strip().lower()
+    if origin not in ALLOWED_SCAN_ORIGINS:
+        return "qr"
+
+    return origin
+
+
+def record_scan_event(
+    item: Species, user_id: int | None = None, origin: str | None = None
+):
+    """
+    Registra un evento de escaneo en la base de datos.
+
+    Args:
+        item: La especie escaneada
+        user_id: ID del usuario autenticado (opcional)
+        origin: Origen del escaneo (qr, web, manual)
+    """
+    # Normalizar origen
+    origin_normalized = normalize_scan_origin(origin)
+
+    # Crear evento de escaneo
+    scan_event = ScanEvent()
+    scan_event.species_id = item.id
+    scan_event.user_id = user_id
+    scan_event.qr_id = item.qr_id
+    scan_event.origin = origin_normalized
+    scan_event.scanned_at = datetime.utcnow()
+
+    # Guardar en base de datos
+    db.session.add(scan_event)
+    db.session.commit()
 
 
 def build_species_tts_payload(species: Species) -> dict:
@@ -79,7 +147,8 @@ def sync_species_to_tts(species: Species) -> None:
     )
     if response.status_code >= 400:
         raise RuntimeError(
-            f"TTS sync HTTP {response.status_code}: {response.text[:300]}")
+            f"TTS sync HTTP {response.status_code}: {response.text[:300]}"
+        )
 
 
 def delete_species_from_tts(species_id: str, qr_id: str | None = None) -> None:
@@ -103,7 +172,8 @@ def delete_species_from_tts(species_id: str, qr_id: str | None = None) -> None:
     )
     if response.status_code >= 400:
         raise RuntimeError(
-            f"TTS delete HTTP {response.status_code}: {response.text[:300]}")
+            f"TTS delete HTTP {response.status_code}: {response.text[:300]}"
+        )
 
 
 def sanitize_id(raw: str) -> str:
@@ -135,20 +205,23 @@ def species_are_related(a: Species, b: Species) -> tuple[bool, bool, bool]:
 
 
 def species_context_for_comparison(item: Species) -> str:
-    curiosidades = "; ".join(
-        item.curiosidades) if item.curiosidades else "No disponibles"
-    return "\n".join([
-        f"- ID QR: {item.qr_id or 'No disponible'}",
-        f"- Nombre común: {item.nombre_comun or 'No disponible'}",
-        f"- Nombre científico: {item.nombre_cientifico or 'No disponible'}",
-        f"- Familia: {item.familia or 'No disponible'}",
-        f"- Orden: {item.orden or 'No disponible'}",
-        f"- Descripción: {item.descripcion or 'No disponible'}",
-        f"- Hábitat: {item.habitat or 'No disponible'}",
-        f"- Dieta: {item.dieta or 'No disponible'}",
-        f"- Zonas: {item.zonas or 'No disponible'}",
-        f"- Curiosidades: {curiosidades}",
-    ])
+    curiosidades = (
+        "; ".join(item.curiosidades) if item.curiosidades else "No disponibles"
+    )
+    return "\n".join(
+        [
+            f"- ID QR: {item.qr_id or 'No disponible'}",
+            f"- Nombre común: {item.nombre_comun or 'No disponible'}",
+            f"- Nombre científico: {item.nombre_cientifico or 'No disponible'}",
+            f"- Familia: {item.familia or 'No disponible'}",
+            f"- Orden: {item.orden or 'No disponible'}",
+            f"- Descripción: {item.descripcion or 'No disponible'}",
+            f"- Hábitat: {item.habitat or 'No disponible'}",
+            f"- Dieta: {item.dieta or 'No disponible'}",
+            f"- Zonas: {item.zonas or 'No disponible'}",
+            f"- Curiosidades: {curiosidades}",
+        ]
+    )
 
 
 def get_species_pair_for_comparison(
@@ -159,7 +232,13 @@ def get_species_pair_for_comparison(
     qr_b = sanitize_id(raw_qr_b or "")
 
     if not qr_a or not qr_b or not ID_RE.match(qr_a) or not ID_RE.match(qr_b):
-        return None, None, False, False, "Selecciona dos especies validas para comparar."
+        return (
+            None,
+            None,
+            False,
+            False,
+            "Selecciona dos especies validas para comparar.",
+        )
 
     if qr_a == qr_b:
         return None, None, False, False, "Debes seleccionar dos especies diferentes."
@@ -168,11 +247,23 @@ def get_species_pair_for_comparison(
     item_b = Species.query.filter_by(qr_id=qr_b).first()
 
     if not item_a or not item_b:
-        return None, None, False, False, "No se encontraron ambas especies para comparar."
+        return (
+            None,
+            None,
+            False,
+            False,
+            "No se encontraron ambas especies para comparar.",
+        )
 
     related, same_family, same_order = species_are_related(item_a, item_b)
     if not related:
-        return item_a, item_b, same_family, same_order, "Solo puedes comparar especies de la misma familia u orden."
+        return (
+            item_a,
+            item_b,
+            same_family,
+            same_order,
+            "Solo puedes comparar especies de la misma familia u orden.",
+        )
 
     return item_a, item_b, same_family, same_order, None
 
@@ -180,10 +271,16 @@ def get_species_pair_for_comparison(
 def build_species_comparison_rows(a: Species, b: Species) -> list[dict[str, str]]:
     return [
         {"label": "ID QR", "a": a.qr_id, "b": b.qr_id},
-        {"label": "Nombre comun", "a": a.nombre_comun or "-",
-            "b": b.nombre_comun or "-"},
-        {"label": "Nombre cientifico", "a": a.nombre_cientifico or "-",
-            "b": b.nombre_cientifico or "-"},
+        {
+            "label": "Nombre comun",
+            "a": a.nombre_comun or "-",
+            "b": b.nombre_comun or "-",
+        },
+        {
+            "label": "Nombre cientifico",
+            "a": a.nombre_cientifico or "-",
+            "b": b.nombre_cientifico or "-",
+        },
         {"label": "Familia", "a": a.familia or "-", "b": b.familia or "-"},
         {"label": "Orden", "a": a.orden or "-", "b": b.orden or "-"},
         {"label": "Habitat", "a": a.habitat or "-", "b": b.habitat or "-"},
@@ -209,8 +306,11 @@ def build_basic_comparison_fallback(
         relation_parts.append(f"misma familia ({a.familia})")
     if same_order:
         relation_parts.append(f"mismo orden ({a.orden})")
-    relation_text = ", ".join(
-        relation_parts) if relation_parts else "sin relación taxonómica directa"
+    relation_text = (
+        ", ".join(relation_parts)
+        if relation_parts
+        else "sin relación taxonómica directa"
+    )
 
     def norm_text(raw: str | None) -> str:
         return (raw or "").strip().lower()
@@ -245,18 +345,19 @@ def build_basic_comparison_fallback(
         for label, detail in [
             (
                 entry.split(":", 1)[0].strip(),
-                entry.split(":", 1)[1].strip(
-                ) if ":" in entry else entry.strip(),
+                entry.split(":", 1)[1].strip() if ":" in entry else entry.strip(),
             )
             for entry in diferencias
         ]
         if detail
     ]
     if not difference_items:
-        difference_items = [{
-            "title": "Diferencias disponibles",
-            "detail": "No hay suficientes datos distintos para destacar diferencias claras.",
-        }]
+        difference_items = [
+            {
+                "title": "Diferencias disponibles",
+                "detail": "No hay suficientes datos distintos para destacar diferencias claras.",
+            }
+        ]
 
     similarity_items = [
         {
@@ -267,10 +368,12 @@ def build_basic_comparison_fallback(
         if detail
     ]
     if not similarity_items:
-        similarity_items = [{
-            "title": "Similitudes disponibles",
-            "detail": "No hay suficientes datos para confirmar similitudes fuertes.",
-        }]
+        similarity_items = [
+            {
+                "title": "Similitudes disponibles",
+                "detail": "No hay suficientes datos para confirmar similitudes fuertes.",
+            }
+        ]
 
     return {
         "differences": difference_items[:6],
@@ -301,10 +404,7 @@ def normalize_comparison_analysis_items(
         if isinstance(item, dict):
             title = str(item.get("title") or item.get("label") or "").strip()
             detail = str(
-                item.get("detail")
-                or item.get("description")
-                or item.get("text")
-                or ""
+                item.get("detail") or item.get("description") or item.get("text") or ""
             ).strip()
         elif isinstance(item, str):
             detail = item.strip()
@@ -312,10 +412,12 @@ def normalize_comparison_analysis_items(
         if not detail:
             continue
 
-        items.append({
-            "title": title or f"{fallback_title_prefix} {index}",
-            "detail": detail,
-        })
+        items.append(
+            {
+                "title": title or f"{fallback_title_prefix} {index}",
+                "detail": detail,
+            }
+        )
 
     return items
 
@@ -341,27 +443,28 @@ def parse_species_comparison_analysis(
         return None
 
     try:
-        payload = json.loads(answer[start:end + 1])
+        payload = json.loads(answer[start : end + 1])
     except json.JSONDecodeError:
         return None
 
     if not isinstance(payload, dict):
         return None
 
-    fallback_payload = build_basic_comparison_fallback(
-        a, b, same_family, same_order)
+    fallback_payload = build_basic_comparison_fallback(a, b, same_family, same_order)
     differences = normalize_comparison_analysis_items(
-        payload.get("differences"), "Diferencia")
+        payload.get("differences"), "Diferencia"
+    )
     similarities = normalize_comparison_analysis_items(
-        payload.get("similarities"), "Similitud")
-    adaptation_explanation = str(payload.get(
-        "adaptation_explanation") or "").strip()
+        payload.get("similarities"), "Similitud"
+    )
+    adaptation_explanation = str(payload.get("adaptation_explanation") or "").strip()
     visitor_message = str(payload.get("visitor_message") or "").strip()
 
     return {
         "differences": differences[:6] or fallback_payload["differences"],
         "similarities": similarities[:4] or fallback_payload["similarities"],
-        "adaptation_explanation": adaptation_explanation or fallback_payload["adaptation_explanation"],
+        "adaptation_explanation": adaptation_explanation
+        or fallback_payload["adaptation_explanation"],
         "visitor_message": visitor_message or fallback_payload["visitor_message"],
     }
 
@@ -409,12 +512,15 @@ def generate_species_comparison_analysis(
     )
 
     try:
-        answer = llm.chat([
-            {"role": "system", "content": system},
-            {"role": "user", "content": user_prompt},
-        ]).strip()
+        answer = llm.chat(
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user_prompt},
+            ]
+        ).strip()
         parsed_answer = parse_species_comparison_analysis(
-            answer, a, b, same_family, same_order)
+            answer, a, b, same_family, same_order
+        )
         if parsed_answer:
             return parsed_answer, True
     except Exception:
@@ -505,40 +611,57 @@ def get_qr_defaults(species: Species) -> dict:
     }
 
 
-def get_qr_style_dict(species: Species, style_obj: QRStyle | None = None, overrides=None) -> dict:
+def get_qr_style_dict(
+    species: Species, style_obj: QRStyle | None = None, overrides=None
+) -> dict:
     data = get_qr_defaults(species)
     if style_obj:
-        data.update({
-            "frame_style": style_obj.frame_style or data["frame_style"],
-            "module_style": style_obj.module_style or data["module_style"],
-            "fill_color": style_obj.fill_color or data["fill_color"],
-            "back_color": style_obj.back_color or data["back_color"],
-            "accent_color": style_obj.accent_color or data["accent_color"],
-            "label_text": style_obj.label_text if style_obj.label_text is not None else "",
-            "top_text": style_obj.top_text if style_obj.top_text is not None else data["top_text"],
-            "show_top_text": bool(style_obj.show_top_text) if style_obj.show_top_text is not None else data["show_top_text"],
-            "show_label_text": bool(style_obj.show_label_text) if style_obj.show_label_text is not None else data["show_label_text"],
-            "top_text_size": style_obj.top_text_size or data["top_text_size"],
-            "label_text_size": style_obj.label_text_size or data["label_text_size"],
-            "box_size": style_obj.box_size or data["box_size"],
-            "border": style_obj.border or data["border"],
-        })
+        data.update(
+            {
+                "frame_style": style_obj.frame_style or data["frame_style"],
+                "module_style": style_obj.module_style or data["module_style"],
+                "fill_color": style_obj.fill_color or data["fill_color"],
+                "back_color": style_obj.back_color or data["back_color"],
+                "accent_color": style_obj.accent_color or data["accent_color"],
+                "label_text": style_obj.label_text
+                if style_obj.label_text is not None
+                else "",
+                "top_text": style_obj.top_text
+                if style_obj.top_text is not None
+                else data["top_text"],
+                "show_top_text": bool(style_obj.show_top_text)
+                if style_obj.show_top_text is not None
+                else data["show_top_text"],
+                "show_label_text": bool(style_obj.show_label_text)
+                if style_obj.show_label_text is not None
+                else data["show_label_text"],
+                "top_text_size": style_obj.top_text_size or data["top_text_size"],
+                "label_text_size": style_obj.label_text_size or data["label_text_size"],
+                "box_size": style_obj.box_size or data["box_size"],
+                "border": style_obj.border or data["border"],
+            }
+        )
 
     source = overrides or {}
     if hasattr(source, "get"):
         is_multi_dict = hasattr(source, "getlist")
-        frame_style = (source.get("frame_style")
-                       or data["frame_style"]).strip()
-        module_style = (source.get("module_style")
-                        or data["module_style"]).strip()
-        data["frame_style"] = frame_style if frame_style in QR_FRAME_OPTIONS else data["frame_style"]
-        data["module_style"] = module_style if module_style in QR_MODULE_OPTIONS else data["module_style"]
+        frame_style = (source.get("frame_style") or data["frame_style"]).strip()
+        module_style = (source.get("module_style") or data["module_style"]).strip()
+        data["frame_style"] = (
+            frame_style if frame_style in QR_FRAME_OPTIONS else data["frame_style"]
+        )
+        data["module_style"] = (
+            module_style if module_style in QR_MODULE_OPTIONS else data["module_style"]
+        )
         data["fill_color"] = normalize_hex_color(
-            source.get("fill_color"), data["fill_color"])
+            source.get("fill_color"), data["fill_color"]
+        )
         data["back_color"] = normalize_hex_color(
-            source.get("back_color"), data["back_color"])
+            source.get("back_color"), data["back_color"]
+        )
         data["accent_color"] = normalize_hex_color(
-            source.get("accent_color"), data["accent_color"])
+            source.get("accent_color"), data["accent_color"]
+        )
         raw_label_text = source.get("label_text")
         data["label_text"] = str(
             raw_label_text if raw_label_text is not None else data["label_text"]
@@ -550,24 +673,25 @@ def get_qr_style_dict(species: Species, style_obj: QRStyle | None = None, overri
         )[:80].strip()
 
         if is_multi_dict:
-            data["show_top_text"] = parse_bool(
-                source.get("show_top_text"), False)
-            data["show_label_text"] = parse_bool(
-                source.get("show_label_text"), False)
+            data["show_top_text"] = parse_bool(source.get("show_top_text"), False)
+            data["show_label_text"] = parse_bool(source.get("show_label_text"), False)
         else:
             if "show_top_text" in source:
                 data["show_top_text"] = parse_bool(
-                    source.get("show_top_text"), data["show_top_text"])
+                    source.get("show_top_text"), data["show_top_text"]
+                )
             if "show_label_text" in source:
                 data["show_label_text"] = parse_bool(
-                    source.get("show_label_text"), data["show_label_text"])
+                    source.get("show_label_text"), data["show_label_text"]
+                )
 
-        data["top_text_size"] = clamp_int(source.get(
-            "top_text_size"), 10, 52, data["top_text_size"])
-        data["label_text_size"] = clamp_int(source.get(
-            "label_text_size"), 10, 52, data["label_text_size"])
-        data["box_size"] = clamp_int(source.get(
-            "box_size"), 6, 18, data["box_size"])
+        data["top_text_size"] = clamp_int(
+            source.get("top_text_size"), 10, 52, data["top_text_size"]
+        )
+        data["label_text_size"] = clamp_int(
+            source.get("label_text_size"), 10, 52, data["label_text_size"]
+        )
+        data["box_size"] = clamp_int(source.get("box_size"), 6, 18, data["box_size"])
         data["border"] = clamp_int(source.get("border"), 2, 10, data["border"])
 
     return data
@@ -581,13 +705,15 @@ def get_species_admin_filters():
     query = Species.query
     if q:
         term = f"%{q}%"
-        query = query.filter(or_(
-            Species.qr_id.ilike(term),
-            Species.nombre_comun.ilike(term),
-            Species.nombre_cientifico.ilike(term),
-            Species.familia.ilike(term),
-            Species.orden.ilike(term),
-        ))
+        query = query.filter(
+            or_(
+                Species.qr_id.ilike(term),
+                Species.nombre_comun.ilike(term),
+                Species.nombre_cientifico.ilike(term),
+                Species.familia.ilike(term),
+                Species.orden.ilike(term),
+            )
+        )
 
     if familia:
         query = query.filter(Species.familia == familia)
@@ -597,7 +723,8 @@ def get_species_admin_filters():
     items = query.order_by(Species.nombre_comun.asc()).all()
 
     familias = [
-        value for (value,) in db.session.query(Species.familia)
+        value
+        for (value,) in db.session.query(Species.familia)
         .filter(Species.familia.isnot(None), Species.familia != "")
         .distinct()
         .order_by(Species.familia.asc())
@@ -605,7 +732,8 @@ def get_species_admin_filters():
     ]
 
     ordenes = [
-        value for (value,) in db.session.query(Species.orden)
+        value
+        for (value,) in db.session.query(Species.orden)
         .filter(Species.orden.isnot(None), Species.orden != "")
         .distinct()
         .order_by(Species.orden.asc())
@@ -665,8 +793,7 @@ def load_qr_font(size: int, *, bold: bool = False):
         except OSError:
             continue
 
-    windows_fonts = os.path.join(
-        os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
+    windows_fonts = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
     for name in font_names:
         try:
             return ImageFont.truetype(os.path.join(windows_fonts, name), target_size)
@@ -679,14 +806,17 @@ def load_qr_font(size: int, *, bold: bool = False):
         return ImageFont.load_default()
 
 
-def render_qr_image(species: Species, style_data: dict, qr_value: str | None = None) -> Image.Image:
+def render_qr_image(
+    species: Species, style_data: dict, qr_value: str | None = None
+) -> Image.Image:
     qr = qrcode.QRCode(
         error_correction=qrcode.constants.ERROR_CORRECT_H,
         box_size=style_data["box_size"],
         border=style_data["border"],
     )
     qr_payload = sanitize_id(
-        qr_value if qr_value is not None else (species.qr_id or species.id))
+        qr_value if qr_value is not None else (species.qr_id or species.id)
+    )
     if not qr_payload:
         qr_payload = species.id
     qr.add_data(qr_payload)
@@ -699,17 +829,14 @@ def render_qr_image(species: Species, style_data: dict, qr_value: str | None = N
     qr_img = qr.make_image(
         image_factory=StyledPilImage,
         module_drawer=get_module_drawer(style_data["module_style"]),
-        color_mask=SolidFillColorMask(
-            front_color=fill_rgb, back_color=back_rgb),
+        color_mask=SolidFillColorMask(front_color=fill_rgb, back_color=back_rgb),
     ).convert("RGBA")
 
     frame_style = style_data["frame_style"]
     top_text = (style_data.get("top_text") or "").strip()
     label_text = (style_data.get("label_text") or "").strip()
-    show_top_text = bool(style_data.get(
-        "show_top_text", True)) and bool(top_text)
-    show_label_text = bool(style_data.get(
-        "show_label_text", True)) and bool(label_text)
+    show_top_text = bool(style_data.get("show_top_text", True)) and bool(top_text)
+    show_label_text = bool(style_data.get("show_label_text", True)) and bool(label_text)
 
     if frame_style == "simple" and not show_top_text and not show_label_text:
         return qr_img
@@ -751,28 +878,55 @@ def render_qr_image(species: Species, style_data: dict, qr_value: str | None = N
     canvas_w = qr_w + padding * 2
     canvas_h = qr_h + padding * 2 + header_h + footer_h
 
-    canvas = Image.new("RGBA", (canvas_w, canvas_h), back_rgb +
-                       ((255,) if len(back_rgb) == 3 else tuple()))
+    canvas = Image.new(
+        "RGBA",
+        (canvas_w, canvas_h),
+        back_rgb + ((255,) if len(back_rgb) == 3 else tuple()),
+    )
     draw = ImageDraw.Draw(canvas)
 
     if frame_style == "card":
-        draw.rounded_rectangle((6, 6, canvas_w - 6, canvas_h - 6),
-                               radius=32, fill=back_rgb, outline=accent_rgb, width=8)
+        draw.rounded_rectangle(
+            (6, 6, canvas_w - 6, canvas_h - 6),
+            radius=32,
+            fill=back_rgb,
+            outline=accent_rgb,
+            width=8,
+        )
     elif frame_style == "badge":
-        draw.rounded_rectangle((6, 6, canvas_w - 6, canvas_h - 6),
-                               radius=34, fill=back_rgb, outline=accent_rgb, width=6)
+        draw.rounded_rectangle(
+            (6, 6, canvas_w - 6, canvas_h - 6),
+            radius=34,
+            fill=back_rgb,
+            outline=accent_rgb,
+            width=6,
+        )
         if show_top_text:
             draw.rounded_rectangle(
-                (18, 18, canvas_w - 18, 18 + header_h), radius=18, fill=accent_rgb)
+                (18, 18, canvas_w - 18, 18 + header_h), radius=18, fill=accent_rgb
+            )
     elif frame_style == "scanme":
-        draw.rounded_rectangle((8, 8, canvas_w - 8, canvas_h - 8),
-                               radius=36, fill=back_rgb, outline=accent_rgb, width=8)
+        draw.rounded_rectangle(
+            (8, 8, canvas_w - 8, canvas_h - 8),
+            radius=36,
+            fill=back_rgb,
+            outline=accent_rgb,
+            width=8,
+        )
         footer_button_h = 34
-        draw.rounded_rectangle((24, canvas_h - footer_button_h - 18,
-                               canvas_w - 24, canvas_h - 18), radius=16, fill=accent_rgb)
+        draw.rounded_rectangle(
+            (24, canvas_h - footer_button_h - 18, canvas_w - 24, canvas_h - 18),
+            radius=16,
+            fill=accent_rgb,
+        )
     else:
-        draw.rounded_rectangle((10, 10, canvas_w - 10, canvas_h - 10),
-                               radius=28, fill=back_rgb, outline=accent_rgb, width=5)
+        draw.rounded_rectangle(
+            (10, 10, canvas_w - 10, canvas_h - 10),
+            radius=28,
+            fill=back_rgb,
+            outline=accent_rgb,
+            width=5,
+        )
 
     qr_x = (canvas_w - qr_w) // 2
     qr_y = padding + header_h
@@ -786,21 +940,37 @@ def render_qr_image(species: Species, style_data: dict, qr_value: str | None = N
         else:
             header_y = padding + header_h // 2
             header_color = fill_rgb
-        draw.text((canvas_w // 2, header_y), header_text,
-                  anchor="mm", fill=header_color, font=font_title)
+        draw.text(
+            (canvas_w // 2, header_y),
+            header_text,
+            anchor="mm",
+            fill=header_color,
+            font=font_title,
+        )
 
     if show_label_text:
         footer_text = fit_text(draw, label_text, font_body, canvas_w - 40)
         label_top = qr_y + qr_h + 10
         label_y = label_top + label_text_h // 2 + 1
-        draw.text((canvas_w // 2, label_y), footer_text,
-                  anchor="mm", fill=fill_rgb, font=font_body)
+        draw.text(
+            (canvas_w // 2, label_y),
+            footer_text,
+            anchor="mm",
+            fill=fill_rgb,
+            font=font_body,
+        )
 
     if frame_style == "scanme":
-        draw.text((canvas_w // 2, canvas_h - 35), "ESCANEA",
-                  anchor="mm", fill=back_rgb, font=font_scan)
+        draw.text(
+            (canvas_w // 2, canvas_h - 35),
+            "ESCANEA",
+            anchor="mm",
+            fill=back_rgb,
+            font=font_scan,
+        )
 
     return canvas
+
 
 # --------- TEXT EXTRACTION ---------
 
@@ -828,8 +998,107 @@ def ensure_schema_updates():
     changed = False
 
     if "qr_id" not in cols:
+        db.session.execute(text("ALTER TABLE species ADD COLUMN qr_id VARCHAR(64)"))
+        changed = True
+
+    if "thumb_pos_x" not in cols:
         db.session.execute(
-            text("ALTER TABLE species ADD COLUMN qr_id VARCHAR(64)")
+            text("ALTER TABLE species ADD COLUMN thumb_pos_x INTEGER DEFAULT 50")
+        )
+        changed = True
+
+    if "thumb_pos_y" not in cols:
+        db.session.execute(
+            text("ALTER TABLE species ADD COLUMN thumb_pos_y INTEGER DEFAULT 50")
+        )
+        changed = True
+
+    if "thumb_zoom" not in cols:
+        db.session.execute(
+            text("ALTER TABLE species ADD COLUMN thumb_zoom INTEGER DEFAULT 100")
+        )
+        changed = True
+
+    # Verificar si la tabla scan_event existe
+    table_check = db.session.execute(text("PRAGMA table_info(scan_event)")).fetchall()
+    if not table_check:
+        db.session.execute(
+            text("""
+            CREATE TABLE scan_event (
+                id INTEGER PRIMARY KEY,
+                species_id VARCHAR(64) NOT NULL,
+                user_id INTEGER,
+                qr_id VARCHAR(64) NOT NULL,
+                origin VARCHAR(20) NOT NULL,
+                scanned_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (species_id) REFERENCES species(id),
+                FOREIGN KEY (user_id) REFERENCES user(id)
+            )
+        """)
+        )
+        changed = True
+
+    # Verificar índices en scan_event
+    index_check = db.session.execute(text("PRAGMA index_list(scan_event)")).fetchall()
+    index_names = {row[1] for row in index_check}
+
+    if "idx_scan_species" not in index_names:
+        db.session.execute(
+            text("CREATE INDEX idx_scan_species ON scan_event(species_id)")
+        )
+        changed = True
+
+    if "idx_scan_user" not in index_names:
+        db.session.execute(text("CREATE INDEX idx_scan_user ON scan_event(user_id)"))
+        changed = True
+
+    if "idx_scan_time" not in index_names:
+        db.session.execute(text("CREATE INDEX idx_scan_time ON scan_event(scanned_at)"))
+        changed = True
+
+    species_rows = db.session.execute(
+        text("SELECT id, qr_id FROM species ORDER BY id ASC")
+    ).fetchall()
+    seen_qr_ids = set()
+
+    for sid, qr_id in species_rows:
+        base = sanitize_id(qr_id or sid)
+        if not base:
+            base = "species"
+
+        candidate = base
+        suffix = 1
+        while candidate in seen_qr_ids:
+            candidate = f"{base}-{suffix}"
+            suffix += 1
+
+        seen_qr_ids.add(candidate)
+
+        if qr_id != candidate:
+            db.session.execute(
+                text("UPDATE species SET qr_id = :qr_id WHERE id = :sid"),
+                {"qr_id": candidate, "sid": sid},
+            )
+            changed = True
+
+    idx_rows = db.session.execute(text("PRAGMA index_list(species)")).fetchall()
+    has_unique_qr_index = False
+    for row in idx_rows:
+        idx_name = row[1]
+        is_unique = bool(row[2])
+        if not is_unique:
+            continue
+
+        idx_info = db.session.execute(
+            text(f'PRAGMA index_info("{idx_name}")')
+        ).fetchall()
+        if len(idx_info) == 1 and idx_info[0][2] == "qr_id":
+            has_unique_qr_index = True
+            break
+
+    if not has_unique_qr_index:
+        db.session.execute(
+            text("CREATE UNIQUE INDEX IF NOT EXISTS uq_species_qr_id ON species(qr_id)")
         )
         changed = True
 
@@ -876,8 +1145,7 @@ def ensure_schema_updates():
             )
             changed = True
 
-    idx_rows = db.session.execute(
-        text("PRAGMA index_list(species)")).fetchall()
+    idx_rows = db.session.execute(text("PRAGMA index_list(species)")).fetchall()
     has_unique_qr_index = False
     for row in idx_rows:
         idx_name = row[1]
@@ -899,46 +1167,49 @@ def ensure_schema_updates():
         changed = True
 
     qr_table = "qr_style"
-    qr_rows = db.session.execute(
-        text(f'PRAGMA table_info("{qr_table}")')
-    ).fetchall()
+    qr_rows = db.session.execute(text(f'PRAGMA table_info("{qr_table}")')).fetchall()
     qr_cols = {row[1] for row in qr_rows}
 
     if "show_top_text" not in qr_cols:
         db.session.execute(
-            text(
-                f'ALTER TABLE "{qr_table}" ADD COLUMN show_top_text BOOLEAN DEFAULT 1')
+            text(f'ALTER TABLE "{qr_table}" ADD COLUMN show_top_text BOOLEAN DEFAULT 1')
         )
         changed = True
 
     if "show_label_text" not in qr_cols:
         db.session.execute(
             text(
-                f'ALTER TABLE "{qr_table}" ADD COLUMN show_label_text BOOLEAN DEFAULT 1')
+                f'ALTER TABLE "{qr_table}" ADD COLUMN show_label_text BOOLEAN DEFAULT 1'
+            )
         )
         changed = True
 
     if "top_text_size" not in qr_cols:
         db.session.execute(
             text(
-                f'ALTER TABLE "{qr_table}" ADD COLUMN top_text_size INTEGER DEFAULT 18')
+                f'ALTER TABLE "{qr_table}" ADD COLUMN top_text_size INTEGER DEFAULT 18'
+            )
         )
         changed = True
 
     if "label_text_size" not in qr_cols:
         db.session.execute(
             text(
-                f'ALTER TABLE "{qr_table}" ADD COLUMN label_text_size INTEGER DEFAULT 18')
+                f'ALTER TABLE "{qr_table}" ADD COLUMN label_text_size INTEGER DEFAULT 18'
+            )
         )
         changed = True
 
-    null_rows = db.session.execute(
-        text(
-            f'SELECT COUNT(*) FROM "{qr_table}" '
-            "WHERE show_top_text IS NULL OR show_label_text IS NULL "
-            "OR top_text_size IS NULL OR label_text_size IS NULL"
-        )
-    ).scalar() or 0
+    null_rows = (
+        db.session.execute(
+            text(
+                f'SELECT COUNT(*) FROM "{qr_table}" '
+                "WHERE show_top_text IS NULL OR show_label_text IS NULL "
+                "OR top_text_size IS NULL OR label_text_size IS NULL"
+            )
+        ).scalar()
+        or 0
+    )
     if int(null_rows) > 0:
         db.session.execute(
             text(
@@ -986,7 +1257,8 @@ def extract_text_from_txt(filepath: str) -> str:
 app = Flask(__name__)
 app.config["SECRET_KEY"] = os.getenv("SECRET_KEY", "dev-secret-change-me")
 app.config["SQLALCHEMY_DATABASE_URI"] = os.getenv(
-    "DATABASE_URL", "sqlite:///bioscan.db")
+    "DATABASE_URL", "sqlite:///bioscan.db"
+)
 app.config["SQLALCHEMY_TRACK_MODIFICATIONS"] = False
 app.config["MAX_CONTENT_LENGTH"] = 25 * 1024 * 1024
 
@@ -1021,8 +1293,7 @@ def format_museum_rag_context(chunks: list[dict]) -> str:
     lines = []
     for idx, chunk in enumerate(chunks, start=1):
         meta = chunk.get("meta") or {}
-        source_label = meta.get(
-            "source_label") or meta.get("source") or "museo"
+        source_label = meta.get("source_label") or meta.get("source") or "museo"
         lines.append(f"[{idx}] Fuente: {source_label}\n{chunk['text']}")
     return "FRAGMENTOS RELEVANTES DEL MUSEO (RAG):\n" + "\n\n".join(lines)
 
@@ -1044,48 +1315,69 @@ def build_chat_scope_rules(question_scope: str) -> str:
     ]
 
     if question_scope == "specimen":
-        base.extend([
-            "La pregunta fue detectada como especifica del especimen/ejemplar exhibido.",
-            "Usa primero y por encima de todo los fragmentos del museo.",
-            "NO deduzcas procedencia, localidad de hallazgo, coleccion, fecha o historia del ejemplar a partir de la distribucion general de la especie, su habitat o su dieta.",
-            "Si el contexto del museo no trae ese dato puntual, dilo claramente: el museo no especifica ese dato del ejemplar exhibido.",
-        ])
+        base.extend(
+            [
+                "La pregunta fue detectada como especifica del especimen/ejemplar exhibido.",
+                "Usa primero y por encima de todo los fragmentos del museo.",
+                "NO deduzcas procedencia, localidad de hallazgo, coleccion, fecha o historia del ejemplar a partir de la distribucion general de la especie, su habitat o su dieta.",
+                "Si el contexto del museo no trae ese dato puntual, dilo claramente: el museo no especifica ese dato del ejemplar exhibido.",
+            ]
+        )
     elif question_scope == "general":
-        base.extend([
-            "La pregunta fue detectada como general sobre la especie.",
-            "Puedes usar la ficha estructurada y complementar con fragmentos del museo, pero manten la respuesta en el animal actual, el museo y el recorrido registrado del usuario.",
-        ])
+        base.extend(
+            [
+                "La pregunta fue detectada como general sobre la especie.",
+                "Puedes usar la ficha estructurada y complementar con fragmentos del museo, pero manten la respuesta en el animal actual, el museo y el recorrido registrado del usuario.",
+            ]
+        )
     else:
-        base.extend([
-            "La pregunta puede mezclar datos generales y datos del museo.",
-            "Si aparece una posible ambiguedad entre especie general y ejemplar exhibido, prioriza el dato del museo y aclara la diferencia.",
-        ])
+        base.extend(
+            [
+                "La pregunta puede mezclar datos generales y datos del museo.",
+                "Si aparece una posible ambiguedad entre especie general y ejemplar exhibido, prioriza el dato del museo y aclara la diferencia.",
+            ]
+        )
 
     return "\n".join(base)
 
 
 def get_chat_history(user_id: int, species_id: str, limit: int = 8):
-    turns = (ChatTurn.query
-             .filter_by(user_id=user_id, species_id=species_id)
-             .order_by(ChatTurn.created_at.desc())
-             .limit(limit)
-             .all())
+    turns = (
+        ChatTurn.query.filter_by(user_id=user_id, species_id=species_id)
+        .order_by(ChatTurn.created_at.desc())
+        .limit(limit)
+        .all()
+    )
     turns = list(reversed(turns))
     return [{"role": t.role, "content": t.content} for t in turns]
 
 
-def save_chat_turns(user_id: int, species_id: str, user_text: str, assistant_text: str, keep_last: int = 60):
-    db.session.add(ChatTurn(user_id=user_id, species_id=species_id,
-                   role="user", content=user_text))
-    db.session.add(ChatTurn(user_id=user_id, species_id=species_id,
-                   role="assistant", content=assistant_text))
+def save_chat_turns(
+    user_id: int,
+    species_id: str,
+    user_text: str,
+    assistant_text: str,
+    keep_last: int = 60,
+):
+    db.session.add(
+        ChatTurn(user_id=user_id, species_id=species_id, role="user", content=user_text)
+    )
+    db.session.add(
+        ChatTurn(
+            user_id=user_id,
+            species_id=species_id,
+            role="assistant",
+            content=assistant_text,
+        )
+    )
     db.session.commit()
 
-    old = (ChatTurn.query
-           .filter_by(user_id=user_id, species_id=species_id)
-           .order_by(ChatTurn.created_at.desc())
-           .offset(keep_last)
-           .all())
+    old = (
+        ChatTurn.query.filter_by(user_id=user_id, species_id=species_id)
+        .order_by(ChatTurn.created_at.desc())
+        .offset(keep_last)
+        .all()
+    )
     for t in old:
         db.session.delete(t)
     if old:
@@ -1098,15 +1390,19 @@ def get_total_museum_species_count() -> int:
 
 def get_user_unique_visit_count(user_id: int) -> int:
     return int(
-        (db.session.query(Visit.species_id)
-         .filter(Visit.user_id == user_id)
-         .distinct()
-         .count())
+        (
+            db.session.query(Visit.species_id)
+            .filter(Visit.user_id == user_id)
+            .distinct()
+            .count()
+        )
         or 0
     )
 
 
-def describe_taxonomy_relationship(current_species: Species, other_species: Species) -> str:
+def describe_taxonomy_relationship(
+    current_species: Species, other_species: Species
+) -> str:
     if other_species.id == current_species.id:
         return "Es el mismo animal que estas viendo ahora."
 
@@ -1116,7 +1412,9 @@ def describe_taxonomy_relationship(current_species: Species, other_species: Spec
     other_order = normalize_taxonomy(other_species.orden)
 
     if current_family and other_family and current_family == other_family:
-        family_label = current_species.familia or other_species.familia or "misma familia"
+        family_label = (
+            current_species.familia or other_species.familia or "misma familia"
+        )
         if current_order and other_order and current_order == other_order:
             order_label = current_species.orden or other_species.orden or "mismo orden"
             return (
@@ -1138,7 +1436,9 @@ def describe_taxonomy_relationship(current_species: Species, other_species: Spec
     return "Con la ficha disponible no se observa un parentesco taxonomico cercano con el animal actual."
 
 
-def build_tour_memory_context(user_id: int | None, current_species: Species, limit: int = 8) -> str:
+def build_tour_memory_context(
+    user_id: int | None, current_species: Species, limit: int = 8
+) -> str:
     if not user_id:
         return ""
 
@@ -1161,9 +1461,12 @@ def build_tour_memory_context(user_id: int | None, current_species: Species, lim
 
     if recent_visits:
         lines.append(
-            "Recorrido reciente del usuario (de la visita mas reciente hacia atras):")
+            "Recorrido reciente del usuario (de la visita mas reciente hacia atras):"
+        )
         for index, (_, visited_species) in enumerate(recent_visits, start=1):
-            marker = " [animal actual]" if visited_species.id == current_species.id else ""
+            marker = (
+                " [animal actual]" if visited_species.id == current_species.id else ""
+            )
             lines.append(
                 f"- Visita {index}: {visited_species.nombre_comun} ({visited_species.qr_id}){marker}. "
                 f"Familia: {visited_species.familia or 'sin dato'}. "
@@ -1186,13 +1489,15 @@ def normalize_chat_question(text: str) -> str:
     if not text:
         return ""
     # Normalize unicode characters
-    text = unicodedata.normalize('NFKD', text)
+    text = unicodedata.normalize("NFKD", text)
     # Convert to lowercase and remove extra whitespace
-    text = re.sub(r'\s+', ' ', text.strip().lower())
+    text = re.sub(r"\s+", " ", text.strip().lower())
     return text
 
 
-def get_recent_unique_visited_species(user_id: int, current_species: Species, limit: int = 8) -> list[Species]:
+def get_recent_unique_visited_species(
+    user_id: int, current_species: Species, limit: int = 8
+) -> list[Species]:
     """Get recently visited species excluding the current one."""
     recent_visits = (
         db.session.query(Visit, Species)
@@ -1209,12 +1514,12 @@ def is_museum_count_question(question: str) -> bool:
     """Check if question is asking about total museum species count."""
     normalized = normalize_chat_question(question)
     count_terms = [
-        "cuantos animales hay", 
+        "cuantos animales hay",
         "cuantas especies hay",
         "numero total de animales",
         "cantidad de especies",
         "total de animales",
-        "total de especies"
+        "total de especies",
     ]
     return any(term in normalized for term in count_terms)
 
@@ -1229,7 +1534,7 @@ def is_tour_relationship_question(question: str) -> bool:
         "esta relacionado con",
         "familiar con alguno",
         "mismo tipo que los otros",
-        "tiene parentesco con"
+        "tiene parentesco con",
     ]
     return any(term in normalized for term in relationship_terms)
 
@@ -1238,7 +1543,7 @@ def build_direct_museum_count_answer(user_id: int, current_species: Species) -> 
     """Build direct answer for museum count questions."""
     total_count = get_total_museum_species_count()
     visited_count = get_user_unique_visit_count(user_id)
-    
+
     return (
         f"En nuestro museo hay actualmente {total_count} animales/especies registradas. "
         f"Has visitado {visited_count} especies distintas hasta ahora. "
@@ -1248,60 +1553,63 @@ def build_direct_museum_count_answer(user_id: int, current_species: Species) -> 
 
 def build_direct_relationship_answer(user_id: int, current_species: Species) -> str:
     """Build direct answer for tour relationship questions."""
-    visited_species = get_recent_unique_visited_species(user_id, current_species, limit=8)
-    
+    visited_species = get_recent_unique_visited_species(
+        user_id, current_species, limit=8
+    )
+
     if not visited_species:
         return (
             "Según tu recorrido, aún no has visitado otras especies además de esta. "
             "¡Te invito a seguir explorando el museo para comparar esta especie con otras!"
         )
-    
+
     related_species = []
     for species in visited_species:
         related, same_family, same_order = species_are_related(current_species, species)
         if related:
             relationship_desc = describe_taxonomy_relationship(current_species, species)
-            related_species.append({
-                "species": species,
-                "relationship": relationship_desc
-            })
-    
+            related_species.append(
+                {"species": species, "relationship": relationship_desc}
+            )
+
     if not related_species:
         return (
             f"He revisado tu recorrido reciente ({len(visited_species)} especies visitadas) "
             "y no encontré relaciones taxonómicas cercanas con esta especie. "
             "Esto significa que pertenece a una familia u orden diferente a las que has visto hasta ahora."
         )
-    
+
     # Build response with related species
     response_parts = [
         f"Basándome en tu recorrido, he encontrado {len(related_species)} especie(s) "
         "con relación taxonómica cercana a esta:"
     ]
-    
+
     for item in related_species[:3]:  # Limit to top 3
         species = item["species"]
         relationship = item["relationship"]
         response_parts.append(
             f"- {species.nombre_comun} ({species.qr_id}): {relationship}"
         )
-    
+
     if len(related_species) > 3:
         response_parts.append(
             f"... y {len(related_species) - 3} más con relaciones similares."
         )
-    
+
     return " ".join(response_parts)
 
 
-def maybe_build_direct_chat_answer(user_id: int, current_species: Species, user_msg: str) -> str | None:
+def maybe_build_direct_chat_answer(
+    user_id: int, current_species: Species, user_msg: str
+) -> str | None:
     """Try to build a direct answer without using LLM if possible."""
     if is_museum_count_question(user_msg):
         return build_direct_museum_count_answer(user_id, current_species)
-    
+
     if is_tour_relationship_question(user_msg):
         return build_direct_relationship_answer(user_id, current_species)
-    
+
     return None
 
 
@@ -1357,7 +1665,9 @@ def api_chat_stream():
 
     sp = db.session.get(Species, species_id)
     if not sp:
-        return Response("ERROR: Especie no encontrada", status=404, mimetype="text/plain")
+        return Response(
+            "ERROR: Especie no encontrada", status=404, mimetype="text/plain"
+        )
 
     question_scope = classify_question_scope(user_msg)
     nl = chr(10)
@@ -1389,16 +1699,20 @@ def api_chat_stream():
             direct_answer,
             keep_last=60,
         )
-        
+
         # Return the direct answer as a stream
         def generate_direct():
             yield direct_answer
-        return Response(stream_with_context(generate_direct()), mimetype="text/plain; charset=utf-8")
+
+        return Response(
+            stream_with_context(generate_direct()), mimetype="text/plain; charset=utf-8"
+        )
 
     tour_note = build_tour_memory_context(current_user.id, sp, limit=8)
 
     structured = build_structured_context(
-        current_user.id, sp, question_scope=question_scope)
+        current_user.id, sp, question_scope=question_scope
+    )
 
     try:
         chunks = get_vs().query_species(
@@ -1412,21 +1726,27 @@ def api_chat_stream():
 
     rag_context = format_museum_rag_context(chunks)
 
-    system = nl.join([
-        "Eres un guia del museo. Responde en espanol, claro, amable y personalizado.",
-        "Responde SOLO a la ultima pregunta del usuario.",
-        "NO hagas preguntas de vuelta ni sugieras nuevas preguntas.",
-        "Si el usuario pide ejemplos, da 3 a 5 ejemplos concretos cuando el contexto si los permita.",
-        "Escribe la respuesta bien organizada, con parrafos cortos y, si ayuda, listas con guion (-).",
-        "No uses markdown, no pongas ** ni encabezados con simbolos.",
-        build_chat_scope_rules(question_scope),
-    ])
+    system = nl.join(
+        [
+            "Eres un guia del museo. Responde en espanol, claro, amable y personalizado.",
+            "Responde SOLO a la ultima pregunta del usuario.",
+            "NO hagas preguntas de vuelta ni sugieras nuevas preguntas.",
+            "Si el usuario pide ejemplos, da 3 a 5 ejemplos concretos cuando el contexto si los permita.",
+            "Escribe la respuesta bien organizada, con parrafos cortos y, si ayuda, listas con guion (-).",
+            "No uses markdown, no pongas ** ni encabezados con simbolos.",
+            build_chat_scope_rules(question_scope),
+        ]
+    )
 
     full_context = (
         f"Tipo de pregunta detectado: {question_scope}."
-        + nl + nl
-        + "Ficha (BD):" + nl
-        + structured + nl + nl
+        + nl
+        + nl
+        + "Ficha (BD):"
+        + nl
+        + structured
+        + nl
+        + nl
         + (memory_note + nl + nl if memory_note else "")
         + (tour_note + nl + nl if tour_note else "")
         + rag_context
@@ -1455,12 +1775,15 @@ def api_chat_stream():
         except Exception as e:
             yield f"{nl}{nl}[ERROR] {e}"
 
-    return Response(stream_with_context(generate()), mimetype="text/plain; charset=utf-8")
+    return Response(
+        stream_with_context(generate()), mimetype="text/plain; charset=utf-8"
+    )
 
 
 @app.get("/")
 def index():
     return render_template("index.html")
+
 
 # ----- AUTH -----
 
@@ -1487,6 +1810,8 @@ def login_post():
         return redirect(next_url)
 
     return redirect(url_for("index"))
+
+
 # --------------------------------------
 
 
@@ -1541,13 +1866,18 @@ def register_post():
     login_user(u)
     flash("Cuenta creada correctamente ✅", "ok")
     return redirect(url_for("index"))
+
+
 # --------------------------------------historial--------------
 
 
 def save_turn(user_id: int, species_id: str, role: str, content: str):
     db.session.add(
-        ChatTurn(user_id=user_id, species_id=species_id, role=role, content=content))
+        ChatTurn(user_id=user_id, species_id=species_id, role=role, content=content)
+    )
     db.session.commit()
+
+
 # ----- LIST -----
 
 
@@ -1557,9 +1887,9 @@ def especies():
     query = Species.query
     if q:
         query = query.filter(
-            (Species.qr_id.ilike(f"%{q}%")) |
-            (Species.nombre_comun.ilike(f"%{q}%")) |
-            (Species.nombre_cientifico.ilike(f"%{q}%"))
+            (Species.qr_id.ilike(f"%{q}%"))
+            | (Species.nombre_comun.ilike(f"%{q}%"))
+            | (Species.nombre_cientifico.ilike(f"%{q}%"))
         )
 
     items = query.order_by(Species.nombre_comun.asc()).all()
@@ -1569,34 +1899,43 @@ def especies():
     scanned_ids = set()
     scanned_count = 0
     if current_user.is_authenticated:
-        rows = (db.session.query(Visit.species_id)
-                .filter(Visit.user_id == current_user.id)
-                .distinct()
-                .all())
+        rows = (
+            db.session.query(Visit.species_id)
+            .filter(Visit.user_id == current_user.id)
+            .distinct()
+            .all()
+        )
         scanned_ids = set([r[0] for r in rows])
         scanned_count = len(scanned_ids)
 
     # escaneos totales por especie (usuarios distintos)
-    counts = (db.session.query(Visit.species_id, db.func.count(db.func.distinct(Visit.user_id)))
-              .group_by(Visit.species_id)
-              .all())
+    counts = (
+        db.session.query(
+            Visit.species_id, db.func.count(db.func.distinct(Visit.user_id))
+        )
+        .group_by(Visit.species_id)
+        .all()
+    )
     scan_counts = {sid: c for sid, c in counts}
 
     return render_template(
         "especies.html",
-        items=items, q=q,
+        items=items,
+        q=q,
         total_count=total_count,
         scanned_count=scanned_count,
         scanned_ids=scanned_ids,
-        scan_counts=scan_counts
+        scan_counts=scan_counts,
     )
 
 
 @app.get("/especies/comparar")
 def especies_compare():
-    item_a, item_b, same_family, same_order, error_message = get_species_pair_for_comparison(
-        request.args.get("a"),
-        request.args.get("b"),
+    item_a, item_b, same_family, same_order, error_message = (
+        get_species_pair_for_comparison(
+            request.args.get("a"),
+            request.args.get("b"),
+        )
     )
 
     if error_message or not item_a or not item_b:
@@ -1617,13 +1956,17 @@ def especies_compare():
 
 @app.get("/api/especies/comparar/analysis")
 def api_species_compare_analysis():
-    item_a, item_b, same_family, same_order, error_message = get_species_pair_for_comparison(
-        request.args.get("a"),
-        request.args.get("b"),
+    item_a, item_b, same_family, same_order, error_message = (
+        get_species_pair_for_comparison(
+            request.args.get("a"),
+            request.args.get("b"),
+        )
     )
 
     if error_message or not item_a or not item_b:
-        return jsonify({"ok": False, "error": error_message or "comparison_invalid"}), 400
+        return jsonify(
+            {"ok": False, "error": error_message or "comparison_invalid"}
+        ), 400
 
     analysis, analysis_from_llm = generate_species_comparison_analysis(
         item_a,
@@ -1632,16 +1975,19 @@ def api_species_compare_analysis():
         same_order,
     )
 
-    return jsonify({
-        "ok": True,
-        "analysis": analysis,
-        "analysis_from_llm": analysis_from_llm,
-    })
+    return jsonify(
+        {
+            "ok": True,
+            "analysis": analysis,
+            "analysis_from_llm": analysis_from_llm,
+        }
+    )
+
+
 # -------------------------
 
 
 @app.get("/scan/<qr_id>")
-@login_required
 def scan_species(qr_id):
     normalized_qr_id = sanitize_id(qr_id)
     if not normalized_qr_id or not ID_RE.match(normalized_qr_id):
@@ -1651,14 +1997,23 @@ def scan_species(qr_id):
     if not item:
         abort(404)
 
-    # Guardar “escaneada” UNA sola vez por usuario
-    exists = Visit.query.filter_by(
-        user_id=current_user.id, species_id=item.id).first()
-    if not exists:
-        db.session.add(Visit(user_id=current_user.id, species_id=item.id))
-        db.session.commit()
+    # Registrar evento de escaneo (siempre, incluso para usuarios no autenticados)
+    user_id = current_user.id if current_user.is_authenticated else None
+    origin = request.args.get("origin")
+    record_scan_event(item, user_id=user_id, origin=origin)
+
+    # Guardar "escaneada" UNA sola vez por usuario AUTENTICADO
+    if current_user.is_authenticated:
+        exists = Visit.query.filter_by(
+            user_id=current_user.id, species_id=item.id
+        ).first()
+        if not exists:
+            db.session.add(Visit(user_id=current_user.id, species_id=item.id))
+            db.session.commit()
 
     return redirect(url_for("especie", qr_id=item.qr_id))
+
+
 # ----- DETAIL -----
 
 
@@ -1674,10 +2029,13 @@ def especie(qr_id):
 
     is_scanned = False
     if current_user.is_authenticated:
-        is_scanned = Visit.query.filter_by(
-            user_id=current_user.id, species_id=item.id).first() is not None
+        is_scanned = (
+            Visit.query.filter_by(user_id=current_user.id, species_id=item.id).first()
+            is not None
+        )
 
     return render_template("especie.html", item=item, is_scanned=is_scanned)
+
 
 # --------- ADMIN CRUD ---------
 
@@ -1746,7 +2104,7 @@ def handle_uploads_for_species(species_id: str, species_obj: Species):
             stored_path=f"uploads/{species_id}/{stored_name}",
             original_name=secure_filename(f.filename),
             file_type=fext,
-            extracted_text=extracted
+            extracted_text=extracted,
         )
         db.session.add(doc_row)
 
@@ -1758,7 +2116,10 @@ def admin_species_new_post():
 
     qr_id = sanitize_id(request.form.get("qr_id"))
     if not qr_id or not ID_RE.match(qr_id):
-        flash("ID QR inválido. Usa solo letras/números/guion/guion_bajo (ej: condor-001).", "error")
+        flash(
+            "ID QR inválido. Usa solo letras/números/guion/guion_bajo (ej: condor-001).",
+            "error",
+        )
         return redirect(url_for("admin_species_new"))
     if Species.query.filter_by(qr_id=qr_id).first():
         flash("Ese ID QR ya existe.", "error")
@@ -1778,8 +2139,7 @@ def admin_species_new_post():
         id=sid,
         qr_id=qr_id,
         nombre_comun=nombre_comun,
-        nombre_cientifico=(request.form.get(
-            "nombre_cientifico") or "").strip(),
+        nombre_cientifico=(request.form.get("nombre_cientifico") or "").strip(),
         familia=(request.form.get("familia") or "").strip(),
         orden=(request.form.get("orden") or "").strip(),
         descripcion=(request.form.get("descripcion") or "").strip(),
@@ -1794,8 +2154,7 @@ def admin_species_new_post():
     )
 
     curiosidades_raw = (request.form.get("curiosidades") or "").strip()
-    sp.curiosidades = [x.strip()
-                       for x in curiosidades_raw.split("\n") if x.strip()]
+    sp.curiosidades = [x.strip() for x in curiosidades_raw.split("\n") if x.strip()]
 
     db.session.add(sp)
 
@@ -1828,8 +2187,11 @@ def admin_species_edit(species_id):
     item = db.session.get(Species, sid)
     if not item:
         abort(404)
-    docs = MuseumDoc.query.filter_by(species_id=item.id).order_by(
-        MuseumDoc.created_at.desc()).all()
+    docs = (
+        MuseumDoc.query.filter_by(species_id=item.id)
+        .order_by(MuseumDoc.created_at.desc())
+        .all()
+    )
     return render_template("admin_species_form.html", item=item, docs=docs)
 
 
@@ -1848,8 +2210,7 @@ def admin_species_edit_post(species_id):
         return redirect(url_for("admin_species_edit", species_id=item.id))
 
     item.nombre_comun = nombre_comun
-    item.nombre_cientifico = (request.form.get(
-        "nombre_cientifico") or "").strip()
+    item.nombre_cientifico = (request.form.get("nombre_cientifico") or "").strip()
     item.familia = (request.form.get("familia") or "").strip()
     item.orden = (request.form.get("orden") or "").strip()
     item.descripcion = (request.form.get("descripcion") or "").strip()
@@ -1864,8 +2225,7 @@ def admin_species_edit_post(species_id):
     item.thumb_zoom = clamp_zoom(request.form.get("thumb_zoom"), 100)
 
     curiosidades_raw = (request.form.get("curiosidades") or "").strip()
-    item.curiosidades = [x.strip()
-                         for x in curiosidades_raw.split("\n") if x.strip()]
+    item.curiosidades = [x.strip() for x in curiosidades_raw.split("\n") if x.strip()]
 
     try:
         handle_uploads_for_species(item.id, item)
@@ -2043,9 +2403,9 @@ def admin_qr_customize_post(species_id):
         flash("ID QR inválido. Usa solo letras/números/guion/guion_bajo.", "error")
         return redirect(url_for("admin_qr_customize", species_id=item.id))
 
-    conflict = (Species.query
-                .filter(Species.qr_id == new_qr_id, Species.id != item.id)
-                .first())
+    conflict = Species.query.filter(
+        Species.qr_id == new_qr_id, Species.id != item.id
+    ).first()
     if conflict:
         flash("Ese ID QR ya está en uso por otra especie.", "error")
         return redirect(url_for("admin_qr_customize", species_id=item.id))
@@ -2071,8 +2431,7 @@ def admin_qr_customize_post(species_id):
     try:
         sync_species_to_tts(item)
     except Exception as e:
-        flash(
-            f"QR guardado, pero falló actualización de audio TTS: {e}", "error")
+        flash(f"QR guardado, pero falló actualización de audio TTS: {e}", "error")
     flash("QR personalizado guardado.", "ok")
     return redirect(url_for("admin_qr_customize", species_id=item.id))
 
@@ -2097,7 +2456,8 @@ def admin_qr_image(species_id, fmt):
     item = get_species_or_404(species_id)
     style_obj = db.session.get(QRStyle, item.id)
     style_data = get_qr_style_dict(
-        item, style_obj, request.args if request.args else None)
+        item, style_obj, request.args if request.args else None
+    )
     preview_qr_id = sanitize_id(request.args.get("preview_qr_id"))
     qr_value = item.qr_id or item.id
     if preview_qr_id and ID_RE.match(preview_qr_id):
@@ -2116,7 +2476,8 @@ def admin_qr_image(species_id, fmt):
     if fmt in {"jpg", "jpeg"}:
         if img.mode != "RGB":
             background = Image.new(
-                "RGB", img.size, ImageColor.getrgb(style_data["back_color"]))
+                "RGB", img.size, ImageColor.getrgb(style_data["back_color"])
+            )
             if img.mode == "RGBA":
                 background.paste(img, mask=img.split()[-1])
             else:
@@ -2132,6 +2493,29 @@ def admin_qr_image(species_id, fmt):
     disposition = "attachment" if download else "inline"
     headers["Content-Disposition"] = f'{disposition}; filename="{filename}"'
     return Response(bio.getvalue(), mimetype=mimetype, headers=headers)
+
+
+# --------- CHAT API (RAG) ---------
+
+
+# --------- API METRICAS ---------
+
+
+@app.get("/admin/metricas")
+@login_required
+def admin_metrics():
+    admin_required()
+    metrics_context = build_scan_metrics_context()
+    return render_template("admin_metrics.html", **metrics_context)
+
+
+@app.get("/api/admin/metricas")
+@login_required
+def api_admin_metrics():
+    admin_required()
+    metrics_context = build_scan_metrics_context()
+    return jsonify(metrics_context)
+
 
 # --------- CHAT API (RAG) ---------
 
@@ -2154,8 +2538,7 @@ def api_chat():
     question_scope = classify_question_scope(user_msg)
     user_id = current_user.id if current_user.is_authenticated else None
     nl = chr(10)
-    structured = build_structured_context(
-        user_id, sp, question_scope=question_scope)
+    structured = build_structured_context(user_id, sp, question_scope=question_scope)
     tour_note = build_tour_memory_context(user_id, sp, limit=8)
 
     try:
@@ -2170,20 +2553,26 @@ def api_chat():
 
     museum_context = format_museum_rag_context(chunks)
 
-    system = nl.join([
-        "Eres un guia del museo. Responde en espanol, claro, amable y personalizado.",
-        "Usa SOLO el contexto proporcionado.",
-        "Si no es posible responder con el contexto, dilo claramente e indica que dato del museo faltaria.",
-        "Escribe la respuesta bien organizada, con parrafos cortos y, si ayuda, listas con guion (-).",
-        "No uses markdown, no pongas ** ni encabezados con simbolos.",
-        build_chat_scope_rules(question_scope),
-    ])
+    system = nl.join(
+        [
+            "Eres un guia del museo. Responde en espanol, claro, amable y personalizado.",
+            "Usa SOLO el contexto proporcionado.",
+            "Si no es posible responder con el contexto, dilo claramente e indica que dato del museo faltaria.",
+            "Escribe la respuesta bien organizada, con parrafos cortos y, si ayuda, listas con guion (-).",
+            "No uses markdown, no pongas ** ni encabezados con simbolos.",
+            build_chat_scope_rules(question_scope),
+        ]
+    )
 
     full_context = (
         f"Tipo de pregunta detectado: {question_scope}."
-        + nl + nl
-        + "Ficha (BD):" + nl
-        + structured + nl + nl
+        + nl
+        + nl
+        + "Ficha (BD):"
+        + nl
+        + structured
+        + nl
+        + nl
         + (tour_note + nl + nl if tour_note else "")
         + museum_context
     )
@@ -2199,6 +2588,8 @@ def api_chat():
         return jsonify({"ok": True, "answer": answer})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
+
+
 # --------- ERRORS ---------
 
 
@@ -2210,6 +2601,7 @@ def not_found(e):
 @app.errorhandler(403)
 def forbidden(e):
     return render_template("404.html", msg="Acceso denegado"), 403
+
 
 # --------- CLI ---------
 
@@ -2233,8 +2625,7 @@ def create_admin():
         if User.query.filter_by(username=username).first():
             print("⚠️ Admin ya existe")
             return
-        u = User(nombre="Administrador", edad=99,
-                 username=username, is_admin=True)
+        u = User(nombre="Administrador", edad=99, username=username, is_admin=True)
         u.set_password(password)
         db.session.add(u)
         db.session.commit()
@@ -2281,10 +2672,9 @@ def seed():
             dieta="Carroña.",
             zonas="Andes (Colombia, Ecuador, Perú, Bolivia, Chile, Argentina).",
             map_embed_url="",
-            museo_info="Dato del museo: símbolo cultural en varias regiones andinas."
+            museo_info="Dato del museo: símbolo cultural en varias regiones andinas.",
         )
-        sp.curiosidades = ["Planea largas distancias",
-                           "Aprovecha corrientes térmicas"]
+        sp.curiosidades = ["Planea largas distancias", "Aprovecha corrientes térmicas"]
         db.session.add(sp)
         db.session.commit()
         try:

@@ -18,8 +18,7 @@ class User(UserMixin, db.Model):
     password_hash = db.Column(db.String(255), nullable=False)
     is_admin = db.Column(db.Boolean, default=False, nullable=False)
 
-    created_at = db.Column(
-        db.DateTime, default=datetime.utcnow, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
     def set_password(self, password: str):
         self.password_hash = generate_password_hash(password)
@@ -70,6 +69,7 @@ class Species(db.Model):
     def curiosidades(self, value):
         self.curiosidades_json = json.dumps(value or [], ensure_ascii=False)
 
+
 class QRStyle(db.Model):
     species_id = db.Column(db.String(64), db.ForeignKey("species.id"), primary_key=True)
 
@@ -90,29 +90,28 @@ class QRStyle(db.Model):
     box_size = db.Column(db.Integer, nullable=False, default=10)
     border = db.Column(db.Integer, nullable=False, default=4)
 
-    updated_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False, onupdate=datetime.utcnow)
-    
+    updated_at = db.Column(
+        db.DateTime, default=datetime.utcnow, nullable=False, onupdate=datetime.utcnow
+    )
+
+
 class MuseumDoc(db.Model):
     id = db.Column(db.Integer, primary_key=True)
-    species_id = db.Column(db.String(64), db.ForeignKey(
-        "species.id"), nullable=False)
+    species_id = db.Column(db.String(64), db.ForeignKey("species.id"), nullable=False)
 
     stored_path = db.Column(db.String(400), nullable=False)
     original_name = db.Column(db.String(255), nullable=False)
     file_type = db.Column(db.String(20), nullable=False)
     extracted_text = db.Column(db.Text, nullable=True)
 
-    created_at = db.Column(
-        db.DateTime, default=datetime.utcnow, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
 class Visit(db.Model):
     id = db.Column(db.Integer, primary_key=True)
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
-    species_id = db.Column(db.String(64), db.ForeignKey(
-        "species.id"), nullable=False)
-    visited_at = db.Column(
-        db.DateTime, default=datetime.utcnow, nullable=False)
+    species_id = db.Column(db.String(64), db.ForeignKey("species.id"), nullable=False)
+    visited_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
 
 # NUEVO: memoria de chat por usuario + especie
@@ -120,11 +119,27 @@ class ChatTurn(db.Model):
     id = db.Column(db.Integer, primary_key=True)
 
     user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=False)
-    species_id = db.Column(db.String(64), db.ForeignKey(
-        "species.id"), nullable=False)
+    species_id = db.Column(db.String(64), db.ForeignKey("species.id"), nullable=False)
 
     role = db.Column(db.String(20), nullable=False)  # "user" | "assistant"
     content = db.Column(db.Text, nullable=False)
 
-    created_at = db.Column(
-        db.DateTime, default=datetime.utcnow, nullable=False)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+class ScanEvent(db.Model):
+    """
+    Registro individual de cada escaneo real, incluyendo visitantes no autenticados.
+    Se usa como fuente principal para metricas reales de escaneo.
+    """
+
+    __tablename__ = "scan_event"
+
+    id = db.Column(db.Integer, primary_key=True)
+    species_id = db.Column(db.String(64), db.ForeignKey("species.id"), nullable=False)
+    user_id = db.Column(db.Integer, db.ForeignKey("user.id"), nullable=True)
+
+    qr_id = db.Column(db.String(64), nullable=False)
+    origin = db.Column(db.String(20), nullable=False)  # "qr", "web", "manual", etc.
+
+    scanned_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
