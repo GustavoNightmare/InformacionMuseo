@@ -1553,7 +1553,6 @@ def ensure_schema_updates():
                 new_value TEXT,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 notes TEXT,
-                FOREIGN KEY (species_id) REFERENCES species(id),
                 FOREIGN KEY (user_id) REFERENCES user(id)
             )
         """)
@@ -2797,6 +2796,11 @@ def admin_species_edit_post(species_id):
     item_before.museo_info = item.museo_info
     item_before.imagen = item.imagen
     item_before.audio = item.audio
+    item_before.map_embed_url = item.map_embed_url
+    item_before.curiosidades_json = item.curiosidades_json
+    item_before.thumb_pos_x = item.thumb_pos_x
+    item_before.thumb_pos_y = item.thumb_pos_y
+    item_before.thumb_zoom = item.thumb_zoom
 
     nombre_comun = (request.form.get("nombre_comun") or "").strip()
     if not nombre_comun:
@@ -2825,18 +2829,18 @@ def admin_species_edit_post(species_id):
     curiosidades_raw = (request.form.get("curiosidades") or "").strip()
     item.curiosidades = [x.strip() for x in curiosidades_raw.split("\n") if x.strip()]
 
-    # Registrar auditoría ANTES del commit (sin commit interno)
-    try:
-        log_species_updated(item_before, item, current_user.id)
-    except Exception:
-        pass
-
     try:
         handle_uploads_for_species(item.id, item)
     except ValueError as ve:
         db.session.rollback()
         flash(str(ve), "error")
         return redirect(url_for("admin_species_edit", species_id=item.id))
+
+    # Registrar auditoría DESPUÉS del procesamiento de uploads (para capturar cambios en imagen/audio)
+    try:
+        log_species_updated(item_before, item, current_user.id)
+    except Exception:
+        pass
 
     db.session.commit()
 
