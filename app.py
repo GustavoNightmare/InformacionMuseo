@@ -3455,5 +3455,236 @@ def seed():
     print("[OK] Seed aplicado")
 
 
+@app.cli.command("seed-demo-data")
+def seed_demo_data():
+    """Genera datos de demostracion para metricas y auditoria."""
+    import random
+    from datetime import timedelta
+
+    with app.app_context():
+        db.create_all()
+        ensure_schema_updates()
+
+        species_list = Species.query.all()
+        if not species_list:
+            print("[ERROR] No hay especies. Ejecuta 'flask seed' primero.")
+            return
+
+        users = User.query.all()
+        if not users:
+            print("[ERROR] No hay usuarios. Ejecuta 'flask create-admin' y 'flask create-user' primero.")
+            return
+
+        admin_users = [u for u in users if u.is_admin]
+        all_user_ids = [u.id for u in users]
+
+        now = datetime.utcnow()
+        ninety_days_ago = now - timedelta(days=90)
+
+        # --- ScanEvent: genera ~1500 escaneos en 90 dias ---
+        scan_count = 0
+        origins = ["qr", "qr", "qr", "qr", "web", "web", "web", "manual"]
+
+        for day_offset in range(90):
+            base_date = ninety_days_ago + timedelta(days=day_offset)
+
+            week_of_month = (day_offset % 28) // 7
+            is_weekend = (base_date.weekday() >= 5)
+
+            if is_weekend:
+                daily_scans = random.randint(15, 35)
+            elif week_of_month < 3:
+                daily_scans = random.randint(10, 25)
+            else:
+                daily_scans = random.randint(5, 15)
+
+            popular_species = species_list[:10]
+            medium_species = species_list[10:20]
+
+            for _ in range(daily_scans):
+                r = random.random()
+                if r < 0.45:
+                    sp = random.choice(popular_species)
+                elif r < 0.75:
+                    sp = random.choice(medium_species)
+                else:
+                    sp = random.choice(species_list)
+
+                if is_weekend:
+                    hour = random.choices(
+                        range(24),
+                        weights=[1,1,1,1,1,1,2,4,8,12,15,18,20,18,15,12,10,8,6,4,3,2,1,1],
+                    )[0]
+                else:
+                    hour = random.choices(
+                        range(24),
+                        weights=[1,1,1,1,1,2,4,7,10,12,14,12,10,8,10,12,14,12,10,7,4,2,1,1],
+                    )[0]
+
+                minute = random.randint(0, 59)
+                second = random.randint(0, 59)
+
+                scanned_at = base_date.replace(hour=hour, minute=minute, second=second)
+                origin = random.choice(origins)
+                user_id = random.choice(all_user_ids) if random.random() < 0.65 else None
+
+                event = ScanEvent(
+                    species_id=sp.id,
+                    user_id=user_id,
+                    qr_id=sp.qr_id,
+                    origin=origin,
+                    scanned_at=scanned_at,
+                )
+                db.session.add(event)
+                scan_count += 1
+
+            if scan_count >= 500:
+                db.session.commit()
+                scan_count = 0
+
+        db.session.commit()
+        total_scans = ScanEvent.query.count()
+        print(f"[OK] Eventos de escaneo totales: {total_scans} (agregados en esta corrida: {scan_count})")
+
+        # --- SpeciesAuditLog: genera muchos mas registros ---
+        audit_count = 0
+        field_names = [
+            "nombre_comun", "nombre_cientifico", "descripcion",
+            "habitat", "dieta", "imagen", "audio",
+            "curiosidades_json", "zonas", "museo_info",
+            "thumb_pos_x", "thumb_pos_y", "thumb_zoom", "map_embed_url",
+        ]
+
+        for sp in species_list:
+            creator = random.choice(admin_users) if admin_users else random.choice(users)
+            created_offset = random.randint(30, 85)
+            created_at = ninety_days_ago + timedelta(days=created_offset, hours=random.randint(8, 18))
+
+            log = SpeciesAuditLog(
+                species_id=sp.id,
+                user_id=creator.id,
+                action="created",
+                created_at=created_at,
+                notes="Especie creada",
+                species_name_snapshot=sp.nombre_comun,
+                species_scientific_name_snapshot=sp.nombre_cientifico,
+                qr_id_snapshot=sp.qr_id,
+            )
+            db.session.add(log)
+            audit_count += 1
+
+            viewed_by = random.sample(admin_users, min(len(admin_users), random.randint(1, max(1, len(admin_users))))) if admin_users else []
+            num_views = random.randint(3, 12)
+            for _ in range(num_views):
+                viewer = random.choice(admin_users) if admin_users else random.choice(users)
+                view_at = created_at + timedelta(
+                    days=random.randint(0, 85 - created_offset),
+                    hours=random.randint(8, 18),
+                    minutes=random.randint(0, 59),
+                )
+                if view_at > now:
+                    view_at = now - timedelta(hours=random.randint(1, 48))
+
+                log = SpeciesAuditLog(
+                    species_id=sp.id,
+                    user_id=viewer.id,
+                    action="viewed_admin",
+                    created_at=view_at,
+                    species_name_snapshot=sp.nombre_comun,
+                    species_scientific_name_snapshot=sp.nombre_cientifico,
+                    qr_id_snapshot=sp.qr_id,
+                )
+                db.session.add(log)
+                audit_count += 1
+
+            num_updates = random.randint(4, 12)
+            for _ in range(num_updates):
+                editor = random.choice(admin_users) if admin_users else random.choice(users)
+                update_at = created_at + timedelta(
+                    days=random.randint(1, max(2, 85 - created_offset)),
+                    hours=random.randint(8, 18),
+                    minutes=random.randint(0, 59),
+                )
+                if update_at > now:
+                    update_at = now - timedelta(hours=random.randint(1, 72))
+
+                field = random.choice(field_names)
+
+                old_values_map = {
+                    "nombre_comun": ["", "Sin nombre", "Especie temporal", "Nombre provisional"],
+                    "nombre_cientifico": ["", "Desconocido", "Pendiente identificacion"],
+                    "descripcion": ["", "Sin descripcion", "Pendiente", "Descripcion breve"],
+                    "habitat": ["", "Sin datos", "Desconocido", "No especificado"],
+                    "dieta": ["", "No especificada", "Pendiente", "Desconocida"],
+                    "imagen": ["", "uploads/temp/placeholder.jpg", "uploads/temp/old_img.png"],
+                    "audio": ["", "uploads/temp/temp_audio.mp3", "uploads/temp/old_audio.mp3"],
+                    "curiosidades_json": ["[]", '["Dato antiguo"]', '["Info vieja"]'],
+                    "zonas": ["", "Sin datos de zona", "Zona no asignada"],
+                    "museo_info": ["", "Informacion pendiente", "Sin datos del museo"],
+                    "thumb_pos_x": ["50", "30", "40", "60", "45"],
+                    "thumb_pos_y": ["50", "60", "45", "55", "40"],
+                    "thumb_zoom": ["100", "90", "110", "95", "105"],
+                    "map_embed_url": ["", "https://old-map.example.com", "pendiente"],
+                }
+
+                new_values_map = {
+                    "nombre_comun": [sp.nombre_comun, sp.nombre_comun.title(), sp.nombre_comun.upper()],
+                    "nombre_cientifico": [sp.nombre_cientifico or "N/A", (sp.nombre_cientifico or "").title() or "N/A"],
+                    "descripcion": [sp.descripcion or "Descripcion actualizada", "Nueva descripcion del museo", sp.descripcion or "Info completa"],
+                    "habitat": [sp.habitat or "Habitat natural", "Bosque tropical", sp.habitat or "Ecosistema diverso"],
+                    "dieta": [sp.dieta or "Dieta variada", "Carnivoro", sp.dieta or "Alimentacion variada"],
+                    "imagen": [sp.imagen or f"uploads/{sp.id}/imagen.jpg", f"uploads/{sp.id}/new_image.png"],
+                    "audio": [sp.audio or f"uploads/{sp.id}/audio.mp3", f"uploads/{sp.id}/new_audio.mp3"],
+                    "curiosidades_json": [sp.curiosidades_json or '["Dato curioso"]', '["Dato 1", "Dato 2"]'],
+                    "zonas": [sp.zonas or "Zona principal del museo", "Exhibicion central"],
+                    "museo_info": [sp.museo_info or "Info actualizada del museo", "Informacion completa del ejemplar"],
+                    "thumb_pos_x": ["50", "60", "45", "55", "40"],
+                    "thumb_pos_y": ["50", "55", "40", "60", "45"],
+                    "thumb_zoom": ["100", "120", "95", "110", "105"],
+                    "map_embed_url": [sp.map_embed_url or "https://maps.example.com/embed", "https://new-map.example.com"],
+                }
+
+                old_val = random.choice(old_values_map.get(field, [""]))
+                new_val = random.choice(new_values_map.get(field, [""]))
+
+                log = SpeciesAuditLog(
+                    species_id=sp.id,
+                    user_id=editor.id,
+                    action="updated",
+                    field_name=field,
+                    old_value=old_val,
+                    new_value=new_val,
+                    created_at=update_at,
+                    species_name_snapshot=sp.nombre_comun,
+                    species_scientific_name_snapshot=sp.nombre_cientifico,
+                    qr_id_snapshot=sp.qr_id,
+                )
+                db.session.add(log)
+                audit_count += 1
+
+        for _ in range(8):
+            deleted_sp = random.choice(species_list[-8:])
+            deleter = random.choice(admin_users) if admin_users else random.choice(users)
+            delete_at = now - timedelta(days=random.randint(1, 30), hours=random.randint(8, 18))
+
+            log = SpeciesAuditLog(
+                species_id=deleted_sp.id,
+                user_id=deleter.id,
+                action="deleted",
+                created_at=delete_at,
+                notes="Especie eliminada del catalogo",
+                species_name_snapshot=deleted_sp.nombre_comun,
+                species_scientific_name_snapshot=deleted_sp.nombre_cientifico,
+                qr_id_snapshot=deleted_sp.qr_id,
+            )
+            db.session.add(log)
+            audit_count += 1
+
+        db.session.commit()
+        total_audit = SpeciesAuditLog.query.count()
+        print(f"[OK] Registros de auditoria totales: {total_audit}")
+        print("[OK] Datos de demostracion completados")
+
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5002, debug=True)
