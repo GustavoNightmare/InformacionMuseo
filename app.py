@@ -3213,7 +3213,9 @@ def build_audit_context():
         SpeciesAuditLog.created_at <= end_datetime,
     )
 
-    logs = query.order_by(SpeciesAuditLog.created_at.desc()).all()
+    page = request.args.get("page", 1, type=int)
+    pagination = query.order_by(SpeciesAuditLog.created_at.desc()).paginate(page=page, per_page=10, error_out=False)
+    logs = pagination.items
 
     # Especies para dropdown
     species_options = Species.query.order_by(Species.nombre_comun.asc()).all()
@@ -3268,7 +3270,15 @@ def build_audit_context():
             "user_options": [{"id": u.id, "nombre": u.nombre} for u in admin_users],
         },
         "logs": formatted_logs,
-        "total": len(formatted_logs),
+        "total": pagination.total,
+        "pagination": {
+            "page": pagination.page,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_prev": pagination.has_prev,
+            "next_num": pagination.next_num,
+            "prev_num": pagination.prev_num,
+        }
     }
 
 

@@ -77,7 +77,7 @@
   <!-- Tabla de Auditoria -->
   <div class="rounded-3xl border border-emerald-100 bg-white shadow-sm overflow-hidden">
     <div class="overflow-x-auto">
-      <table class="w-full text-sm min-w-max">
+      <table class="w-full text-sm">
         <thead class="bg-emerald-50 text-slate-700">
           <tr>
             <th class="text-left p-3">Fecha/Hora</th>
@@ -131,6 +131,48 @@
         </tbody>
       </table>
     </div>
+    
+    <!-- Paginación -->
+    {% if pagination and pagination.pages > 1 %}
+    <div class="border-t border-emerald-100 bg-slate-50 px-4 py-3 sm:px-6 flex items-center justify-between">
+      <div class="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+        <div>
+          <p class="text-sm text-slate-700">
+            Página <span class="font-medium">{{ pagination.page }}</span> de <span class="font-medium">{{ pagination.pages }}</span>
+          </p>
+        </div>
+        <div>
+          <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+            {% if pagination.has_prev %}
+            <a href="{{ url_for('admin_especies_auditoria', page=pagination.prev_num, species_id=filters.species_id, action=filters.action, user_id=filters.user_id, start=filters.start, end=filters.end) }}" class="relative inline-flex items-center px-3 py-2 rounded-l-md border border-slate-300 bg-white text-sm font-medium text-slate-500 hover:bg-slate-50">
+              Anterior
+            </a>
+            {% endif %}
+            
+            {% if pagination.has_next %}
+            <a href="{{ url_for('admin_especies_auditoria', page=pagination.next_num, species_id=filters.species_id, action=filters.action, user_id=filters.user_id, start=filters.start, end=filters.end) }}" class="relative inline-flex items-center px-3 py-2 rounded-r-md border border-slate-300 bg-white text-sm font-medium text-slate-500 hover:bg-slate-50">
+              Siguiente
+            </a>
+            {% endif %}
+          </nav>
+        </div>
+      </div>
+      
+      <!-- Controles móviles -->
+      <div class="flex items-center justify-between w-full sm:hidden">
+        {% if pagination.has_prev %}
+        <a href="{{ url_for('admin_especies_auditoria', page=pagination.prev_num, species_id=filters.species_id, action=filters.action, user_id=filters.user_id, start=filters.start, end=filters.end) }}" class="relative inline-flex items-center px-4 py-2 border border-slate-300 text-sm font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50">
+          Anterior
+        </a>
+        {% endif %}
+        {% if pagination.has_next %}
+        <a href="{{ url_for('admin_especies_auditoria', page=pagination.next_num, species_id=filters.species_id, action=filters.action, user_id=filters.user_id, start=filters.start, end=filters.end) }}" class="ml-auto relative inline-flex items-center px-4 py-2 border border-slate-300 text-sm font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50">
+          Siguiente
+        </a>
+        {% endif %}
+      </div>
+    </div>
+    {% endif %}
   </div>
 </div>
 {% endblock %}
