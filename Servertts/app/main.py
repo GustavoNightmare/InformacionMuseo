@@ -700,6 +700,7 @@ async def qr_resolve_frame(
             "qr_id": qr_id,
             "species_id": filtered_data.get("species_id") or qr_id,
             "text": text,
+            "audio_url": f"{str(request.base_url).rstrip('/')}/tts/by-qr/{qr_id}?key={key or ''}&style={style}",
             "fields": filtered_data,
             "decode_method": decode_method,
             "debug_frame_url": "/debug/last-frame",
