@@ -1146,7 +1146,9 @@ def get_species_admin_filters():
     if orden:
         query = query.filter(Species.orden == orden)
 
-    items = query.order_by(Species.nombre_comun.asc()).all()
+    page = request.args.get("page", 1, type=int)
+    pagination = query.order_by(Species.nombre_comun.asc()).paginate(page=page, per_page=10, error_out=False)
+    items = pagination.items
 
     familias = [
         value
@@ -1168,33 +1170,9 @@ def get_species_admin_filters():
 
     admin_items = []
     for s in items:
-        updated_by_name = "-"
-        if s.updated_by_id:
-            user = db.session.get(User, s.updated_by_id)
-            if user:
-                updated_by_name = user.nombre
-
-        last_view_log = (
-            SpeciesAuditLog.query.filter_by(species_id=s.id, action="viewed_admin")
-            .order_by(SpeciesAuditLog.created_at.desc())
-            .first()
-        )
-        last_admin_viewed_at = None
-        last_admin_viewed_by = "-"
-        if last_view_log:
-            last_admin_viewed_at = last_view_log.created_at
-            if last_view_log.user_id:
-                view_user = db.session.get(User, last_view_log.user_id)
-                if view_user:
-                    last_admin_viewed_by = view_user.nombre
-
         admin_items.append(
             {
                 "species": s,
-                "updated_at": s.updated_at,
-                "updated_by_name": updated_by_name,
-                "last_admin_viewed_at": last_admin_viewed_at,
-                "last_admin_viewed_by": last_admin_viewed_by,
             }
         )
 
@@ -1206,6 +1184,15 @@ def get_species_admin_filters():
         "admin_items": admin_items,
         "familias": familias,
         "ordenes": ordenes,
+        "pagination": {
+            "page": pagination.page,
+            "pages": pagination.pages,
+            "has_next": pagination.has_next,
+            "has_prev": pagination.has_prev,
+            "next_num": pagination.next_num,
+            "prev_num": pagination.prev_num,
+            "total": pagination.total
+        }
     }
 
 
@@ -2560,6 +2547,7 @@ def scan_species(qr_id):
     record_scan_event(item, user_id=user_id, origin=origin)
 
     # Guardar "escaneada" UNA sola vez por usuario AUTENTICADO
+    just_completed = False
     if current_user.is_authenticated:
         exists = Visit.query.filter_by(
             user_id=current_user.id, species_id=item.id
@@ -2567,7 +2555,14 @@ def scan_species(qr_id):
         if not exists:
             db.session.add(Visit(user_id=current_user.id, species_id=item.id))
             db.session.commit()
+            
+            total_species = Species.query.count()
+            user_scanned = Visit.query.filter_by(user_id=current_user.id).count()
+            if total_species > 0 and user_scanned >= total_species:
+                just_completed = True
 
+    if just_completed:
+        return redirect(url_for("especie", qr_id=item.qr_id, celebration="1"))
     return redirect(url_for("especie", qr_id=item.qr_id))
 
 
@@ -2605,7 +2600,9 @@ def especie(qr_id):
             is not None
         )
 
-    return render_template("especie.html", item=item, is_scanned=is_scanned)
+    show_celebration = request.args.get("celebration") == "1"
+
+    return render_template("especie.html", item=item, is_scanned=is_scanned, show_celebration=show_celebration)
 
 
 # --------- ADMIN CRUD ---------

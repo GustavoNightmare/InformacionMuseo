@@ -37,7 +37,7 @@
   </div>
 
   <div class="md:col-span-4 flex flex-wrap items-center justify-between gap-3">
-    <p class="text-sm text-slate-600">Resultados: <span class="font-semibold text-slate-800">{{ items|length }}</span></p>
+    <p class="text-sm text-slate-600">Resultados: <span class="font-semibold text-slate-800">{{ pagination.total if pagination else items|length }}</span></p>
     <div class="flex gap-2">
       <a href="{{ url_for('admin_qr_list') }}" class="rounded-2xl border px-4 py-2 text-sm hover:bg-slate-50">Limpiar</a>
       <button type="submit" class="rounded-2xl bg-emerald-600 px-4 py-2 text-sm font-medium text-white hover:bg-emerald-700">Buscar</button>
@@ -79,5 +79,47 @@
       {% endfor %}
     </tbody>
   </table>
+
+  <!-- Paginación -->
+  {% if pagination and pagination.pages > 1 %}
+  <div class="border-t border-emerald-100 bg-slate-50 px-4 py-3 sm:px-6 flex items-center justify-between">
+    <div class="hidden sm:flex-1 sm:flex sm:items-center sm:justify-between">
+      <div>
+        <p class="text-sm text-slate-700">
+          Página <span class="font-medium">{{ pagination.page }}</span> de <span class="font-medium">{{ pagination.pages }}</span>
+        </p>
+      </div>
+      <div>
+        <nav class="relative z-0 inline-flex rounded-md shadow-sm -space-x-px" aria-label="Pagination">
+          {% if pagination.has_prev %}
+          <a href="{{ url_for(request.endpoint, page=pagination.prev_num, q=q, familia=familia, orden=orden) }}" class="relative inline-flex items-center px-3 py-2 rounded-l-md border border-slate-300 bg-white text-sm font-medium text-slate-500 hover:bg-slate-50">
+            Anterior
+          </a>
+          {% endif %}
+          
+          {% if pagination.has_next %}
+          <a href="{{ url_for(request.endpoint, page=pagination.next_num, q=q, familia=familia, orden=orden) }}" class="relative inline-flex items-center px-3 py-2 rounded-r-md border border-slate-300 bg-white text-sm font-medium text-slate-500 hover:bg-slate-50">
+            Siguiente
+          </a>
+          {% endif %}
+        </nav>
+      </div>
+    </div>
+    
+    <!-- Controles móviles -->
+    <div class="flex items-center justify-between w-full sm:hidden">
+      {% if pagination.has_prev %}
+      <a href="{{ url_for(request.endpoint, page=pagination.prev_num, q=q, familia=familia, orden=orden) }}" class="relative inline-flex items-center px-4 py-2 border border-slate-300 text-sm font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50">
+        Anterior
+      </a>
+      {% endif %}
+      {% if pagination.has_next %}
+      <a href="{{ url_for(request.endpoint, page=pagination.next_num, q=q, familia=familia, orden=orden) }}" class="ml-auto relative inline-flex items-center px-4 py-2 border border-slate-300 text-sm font-medium rounded-md text-slate-700 bg-white hover:bg-slate-50">
+        Siguiente
+      </a>
+      {% endif %}
+    </div>
+  </div>
+  {% endif %}
 </div>
 {% endblock %}
